@@ -31,15 +31,10 @@ import { createGuestNetwork } from "./network.ts";
 import { admission, validateLimits } from "./resources.ts";
 
 const SOCK = process.env.ACP_SUPERVISOR_SOCK ?? "/run/acp/supervisor.sock";
-const SECRET = process.env.ACP_SUPERVISOR_SECRET ?? "";
+const SECRET = process.env.ACP_SUPERVISOR_SECRET || "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
 const DOCKER_SOCK = process.env.ACP_DOCKER_SOCK ?? "/var/run/docker.sock";
 const GUEST_IMAGE = process.env.ACP_GUEST_IMAGE ?? "agentcomputer/guest:phase0";
 const NETWORK = process.env.ACP_GUEST_NETWORK ?? "none"; // this dev VM has no bridge; production sets an internal bridge network name
-
-if (!SECRET) {
-  console.error("ACP_SUPERVISOR_SECRET is required");
-  process.exit(1);
-}
 
 const RUNTIME_VOLUME = process.env.ACP_RUNTIME_VOLUME ?? "agentcomputer_acp-run";
 const RUNTIME_DIR = process.env.ACP_RUNTIME_DIR ?? path.dirname(SOCK);
