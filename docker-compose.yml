@@ -65,11 +65,8 @@ services:
     volumes:
       - acp-run:/run/acp:ro
       - acp-data:/data
-    ports:
-      # Localhost by default: put a TLS reverse proxy in front for
-      # remote access (see DEPLOYMENT.md). Change to "8787:8787" only
-      # on a trusted network.
-      - "127.0.0.1:8787:8787"
+    expose:
+      - "8787"
     depends_on: [supervisor]
     restart: unless-stopped
 

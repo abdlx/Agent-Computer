@@ -9,7 +9,7 @@ import { once } from "node:events";
 
 // Real supervisor process and protocol, fake Docker. Does not claim cgroup or Docker E2E evidence.
 test("supervisor rejects spoofed ownership and serializes concurrent admission", async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "acp-security-"));
+  const dir = fs.mkdtempSync(path.join(process.cwd(), "tmp-acp-security-"));
   const socket = (name) => process.platform === "win32" ? String.raw`\\.\pipe\acp-${process.pid}-${name}` : path.join(dir, `${name}.sock`);
   const dockerSocket = socket("docker"), supervisorSocket = socket("supervisor");
   const identities = Object.fromEntries(["box-one", "box-two"].map(id => [id, { containerId: `trusted-${id}`, volume: `acp-${id}-home`, mountpoint: `/volumes/${id}` }]));
