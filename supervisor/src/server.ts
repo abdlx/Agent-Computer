@@ -36,7 +36,16 @@ const DOCKER_SOCK = process.env.ACP_DOCKER_SOCK ?? "/var/run/docker.sock";
 const GUEST_IMAGE = process.env.ACP_GUEST_IMAGE ?? "agentcomputer/guest:phase0";
 const NETWORK = process.env.ACP_GUEST_NETWORK ?? "none"; // this dev VM has no bridge; production sets an internal bridge network name
 
-const RUNTIME_VOLUME = process.env.ACP_RUNTIME_VOLUME ?? "agentcomputer_acp-run";
+function getRuntimeVolume(): string {
+  try {
+    const info = fs.readFileSync("/proc/self/mountinfo", "utf8");
+    const m = /\/var\/lib\/docker\/volumes\/([^/]+)\/_data\s+\/run\/acp/.exec(info);
+    if (m) return m[1];
+  } catch {}
+  return process.env.ACP_RUNTIME_VOLUME ?? "agentcomputer_acp-run";
+}
+
+const RUNTIME_VOLUME = getRuntimeVolume();
 const RUNTIME_DIR = process.env.ACP_RUNTIME_DIR ?? path.dirname(SOCK);
 const REGISTRY_FILE = process.env.ACP_REGISTRY_FILE ?? "/data/supervisor/registry.json";
 type Identity = { containerId: string; volume: string; mountpoint: string; networkId?: string; proxyId?: string; deleting?: boolean; deleteVolume?: boolean };
