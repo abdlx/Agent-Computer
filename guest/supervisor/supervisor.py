@@ -563,11 +563,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(502, {"error": f"vnc upstream unavailable: {e}"})
         accept = base64.b64encode(hashlib.sha1(
             (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
+        proto = self.headers.get("Sec-WebSocket-Protocol")
+        proto_line = f"Sec-WebSocket-Protocol: {proto}\r\n" if proto else ""
         self.connection.sendall((
             "HTTP/1.1 101 Switching Protocols\r\n"
             "Upgrade: websocket\r\nConnection: Upgrade\r\n"
             f"Sec-WebSocket-Accept: {accept}\r\n"
-            "Sec-WebSocket-Protocol: binary\r\n\r\n").encode())
+            f"{proto_line}\r\n").encode())
         self.close_connection = True
         if rest:
             self.connection.sendall(rest)

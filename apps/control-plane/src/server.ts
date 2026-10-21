@@ -486,7 +486,11 @@ const server = http.createServer(async (req, res) => {
       const cookies = parseCookies(req.headers.cookie);
       const sessionHash = cookies.acp_session ? sha256(cookies.acp_session) : null;
       const secure = Boolean((req.socket as { encrypted?: boolean }).encrypted)
-        || (process.env.ACP_TRUST_PROXY === "true" && req.headers["x-forwarded-proto"] === "https");
+        || (process.env.ACP_TRUST_PROXY !== "false" && (
+          req.headers["x-forwarded-proto"] === "https" ||
+          req.headers["x-forwarded-protocol"] === "https" ||
+          String(req.headers["cf-visitor"]).includes("https")
+        ));
       const out = await r.handler({ user, body, params, sessionHash, secure });
       return send(out.status ?? 200, out.json ?? {}, out.headers ?? {});
     } catch (e) {
@@ -533,6 +537,7 @@ function serveStatic(urlPath: string, res: http.ServerResponse): boolean {
 // is never terminated here — this is a byte pipe with auth + wake.
 server.on("upgrade", async (req, socket, head) => {
   const fail = (code: number, msg: string) => {
+    console.warn(`[upgrade-fail] ${code} ${msg} url=${req.url}`);
     try {
       socket.write(`HTTP/1.1 ${code} ${msg}\r\nContent-Length: 0\r\n\r\n`);
     } catch { /* gone */ }
@@ -540,9 +545,14 @@ server.on("upgrade", async (req, socket, head) => {
   };
   const m = /^\/api\/computers\/([^/]+)\/vnc$/.exec((req.url ?? "").split("?")[0]);
   if (!m) return fail(404, "Not Found");
+  const host = (req.headers["x-forwarded-host"] as string | undefined)?.split(",")[0]?.trim() || req.headers.host;
   const secureTransport = Boolean((req.socket as { encrypted?: boolean }).encrypted)
-    || (process.env.ACP_TRUST_PROXY === "true" && req.headers["x-forwarded-proto"] === "https");
-  if (!originAllowed(req.headers.origin, req.headers.host, secureTransport, process.env.ACP_PUBLIC_ORIGIN)) return fail(403, "Forbidden");
+    || (process.env.ACP_TRUST_PROXY !== "false" && (
+      req.headers["x-forwarded-proto"] === "https" ||
+      req.headers["x-forwarded-protocol"] === "https" ||
+      String(req.headers["cf-visitor"]).includes("https")
+    ));
+  if (!originAllowed(req.headers.origin, host, secureTransport, process.env.ACP_PUBLIC_ORIGIN)) return fail(403, "Forbidden");
   const cookies = parseCookies(req.headers.cookie);
   const user = cookies.acp_session ? db.sessionUser(sha256(cookies.acp_session)) : null;
   if (!user) return fail(401, "Unauthorized");
@@ -579,6 +589,7 @@ server.on("upgrade", async (req, socket, head) => {
   upstream.on("error", () => socket.destroy());
   upstream.on("connect", () => {
     const key = req.headers["sec-websocket-key"];
+    const proto = req.headers["sec-websocket-protocol"];
     const lines = [
       "GET /vnc HTTP/1.1",
       "Host: localhost",
@@ -586,7 +597,7 @@ server.on("upgrade", async (req, socket, head) => {
       "Connection: Upgrade",
       `Sec-WebSocket-Key: ${key}`,
       `Sec-WebSocket-Version: ${req.headers["sec-websocket-version"] ?? "13"}`,
-      `Sec-WebSocket-Protocol: ${req.headers["sec-websocket-protocol"] ?? "binary"}`,
+      ...(proto ? [`Sec-WebSocket-Protocol: ${proto}`] : []),
       `X-Guest-Token: ${row.guestToken}`,
       "\r\n",
     ];

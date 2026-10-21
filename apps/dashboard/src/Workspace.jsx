@@ -53,7 +53,9 @@ export default function Workspace({ computerId, navigate }) {
     const url = `${proto}//${location.host}/api/computers/${computerId}/vnc`;
     setConnState("connecting");
     const RFBConstructor = resolveRFB(RFB);
-    const rfb = new RFBConstructor(screenRef.current, url, {});
+    const rfb = new RFBConstructor(screenRef.current, url, {
+      wsProtocols: ["binary"],
+    });
     rfb.scaleViewport = true;
     rfb.background = "#000";
     rfb.addEventListener("connect", () => setConnState("connected"));
