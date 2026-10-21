@@ -17,7 +17,7 @@ services:
     command: ["node", "supervisor/src/server.ts"]
     environment:
       ACP_SUPERVISOR_SOCK: /run/acp/supervisor.sock
-      ACP_SUPERVISOR_SECRET: ${ACP_SUPERVISOR_SECRET:-}
+      ACP_SUPERVISOR_SECRET: ${ACP_SUPERVISOR_SECRET:-a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90}
       ACP_GUEST_IMAGE: ${ACP_GUEST_IMAGE:-agentcomputer/guest:phase0}
       ACP_GUEST_NETWORK: agentcomputer_guests
       ACP_RUNTIME_VOLUME: agentcomputer_acp-run
@@ -56,10 +56,10 @@ services:
     command: ["node", "control-plane/src/server.ts"]
     environment:
       ACP_SUPERVISOR_SOCK: /run/acp/supervisor.sock
-      ACP_SUPERVISOR_SECRET: ${ACP_SUPERVISOR_SECRET:-}
+      ACP_SUPERVISOR_SECRET: ${ACP_SUPERVISOR_SECRET:-a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90}
       ACP_PORT: "8787"
       ACP_PUBLIC_ORIGIN: ${ACP_PUBLIC_ORIGIN:-}
-      ACP_TRUST_PROXY: ${ACP_TRUST_PROXY:-false}
+      ACP_TRUST_PROXY: ${ACP_TRUST_PROXY:-true}
       ACP_DB: /data/control-plane.db
       ACP_IDLE_TIMEOUT_S: ${ACP_IDLE_TIMEOUT_S:-300}
     volumes:
