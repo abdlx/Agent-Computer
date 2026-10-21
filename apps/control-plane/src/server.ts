@@ -436,8 +436,8 @@ const SECURITY_HEADERS: Record<string, string> = {
   "x-frame-options": "DENY",
   "referrer-policy": "no-referrer",
   "content-security-policy":
-    "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data:; " +
-    "style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'",
+    "default-src 'self'; connect-src 'self' ws: wss: https://cloudflareinsights.com; img-src 'self' data:; " +
+    "style-src 'self' 'unsafe-inline'; script-src 'self' https://static.cloudflareinsights.com; frame-ancestors 'none'",
 };
 
 const server = http.createServer(async (req, res) => {
@@ -448,8 +448,18 @@ const server = http.createServer(async (req, res) => {
   for (const [header, value] of Object.entries(SECURITY_HEADERS)) res.setHeader(header, value);
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = url.pathname;
+
+  // Static dashboard (SPA): serve public static assets first.
+  if (req.method === "GET" && !path.startsWith("/api") && path !== "/mcp" && serveStatic(path, res)) {
+    return;
+  }
+
   const secureTransport = Boolean((req.socket as { encrypted?: boolean }).encrypted)
-    || (process.env.ACP_TRUST_PROXY === "true" && req.headers["x-forwarded-proto"] === "https");
+    || (process.env.ACP_TRUST_PROXY !== "false" && (
+      req.headers["x-forwarded-proto"] === "https" ||
+      req.headers["x-forwarded-protocol"] === "https" ||
+      String(req.headers["cf-visitor"]).includes("https")
+    ));
   if (!originAllowed(req.headers.origin, req.headers.host, secureTransport, process.env.ACP_PUBLIC_ORIGIN)) {
     return send(403, { error: "origin not allowed" });
   }
@@ -482,10 +492,6 @@ const server = http.createServer(async (req, res) => {
     } catch (e) {
       return send(500, { error: (e as Error).message });
     }
-  }
-  // Static dashboard (SPA): served for non-API GETs when a build exists.
-  if (req.method === "GET" && !path.startsWith("/api") && serveStatic(path, res)) {
-    return;
   }
   return send(404, { error: "no such route" });
 });

@@ -5,6 +5,9 @@ export function originAllowed(origin: string | undefined, host: string | undefin
   try {
     const expected = new URL(publicOrigin || `${secure ? "https" : "http"}://${host}`);
     const supplied = new URL(origin);
-    return supplied.origin === expected.origin && supplied.pathname === "/" && !supplied.search && !supplied.hash && !supplied.username && !supplied.password;
+    if (supplied.pathname !== "/" || supplied.search || supplied.hash || supplied.username || supplied.password) return false;
+    if (supplied.origin === expected.origin) return true;
+    if (supplied.host === expected.host && (supplied.protocol === "https:" || supplied.protocol === "http:")) return true;
+    return false;
   } catch { return false; }
 }
