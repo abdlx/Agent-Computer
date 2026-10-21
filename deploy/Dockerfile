@@ -16,5 +16,6 @@ ENV ACP_DASHBOARD_DIR=/app/dashboard/dist \
     ACP_DB=/data/control-plane.db \
     ACP_PORT=8787 \
     ACP_SUPERVISOR_SOCK=/run/acp/supervisor.sock
+EXPOSE 8787
 # Control plane (compose overrides the command for the supervisor service).
 CMD ["node", "control-plane/src/server.ts"]

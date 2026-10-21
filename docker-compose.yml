@@ -51,6 +51,7 @@ services:
     restart: unless-stopped
 
   control-plane:
+    build: { context: ., dockerfile: deploy/Dockerfile }
     image: agentcomputer/platform:0.1.0
     command: ["node", "control-plane/src/server.ts"]
     environment:
@@ -72,13 +73,12 @@ services:
     depends_on: [supervisor]
     restart: unless-stopped
 
-  # Build-only helper: `docker compose --profile build build guest-image`
-  # produces the guest image the supervisor instantiates per computer.
+  # Base guest image cache for supervisor to spawn agent computers.
   guest-image:
-    profiles: ["build"]
     build: { context: guest, dockerfile: Dockerfile }
     image: ${ACP_GUEST_IMAGE:-agentcomputer/guest:phase0}
-    command: ["true"]
+    command: ["sleep", "infinity"]
+    restart: unless-stopped
 
 volumes:
   acp-run:
