@@ -183,6 +183,9 @@ export class LifecycleEngine {
     this.store = store;
     this.driver = opts.driver ?? new CliDockerDriver();
     this.state = store.load();
+    // Operations belong to the previous process; none can still execute after restart.
+    this.state.operations = {};
+    this.persist();
     this.opts = {
       idleTimeoutS: opts.idleTimeoutS ?? 300,
       leaseTtlS: opts.leaseTtlS ?? 90,
@@ -315,7 +318,11 @@ export class LifecycleEngine {
   private enqueueTransition(computerId: string, fn: () => Promise<void>): Promise<void> {
     const prev = this.transitions.get(computerId) ?? Promise.resolve();
     const next = prev.then(fn, fn);
-    this.transitions.set(computerId, next.catch(() => undefined));
+    const settled = next.catch(() => undefined);
+    this.transitions.set(computerId, settled);
+    void settled.then(() => {
+      if (this.transitions.get(computerId) === settled) this.transitions.delete(computerId);
+    });
     return next;
   }
 
@@ -336,6 +343,8 @@ export class LifecycleEngine {
 
   private async doSleep(computerId: string, reason = "manual"): Promise<Computer> {
     const c = this.get(computerId);
+    if (c.state === "deleting" || c.state === "deleted") throw new Error("computer is being deleted");
+    if (this.activeOperations(computerId).length) throw new Error("computer has active operations; retry after they finish");
     if (c.state === "sleeping") return c;
     c.state = "stopping"; this.persist();
     try {
@@ -406,27 +415,32 @@ export class LifecycleEngine {
 
   /** Wake-on-call: ensure the computer is ready, then run the guest call. */
   async call<T>(computerId: string, fn: (c: Computer) => Promise<T>): Promise<T> {
-    // Never run against a computer mid-transition: wait out stopping /
-    // waking / starting first (bounded by the stop grace and the wake
-    // timeout), otherwise a call issued during a sleep would execute
-    // against a container that is about to stop.
-    for (let i = 0; i < 2400; i++) {
-      const s = this.get(computerId).state;
-      if (s !== "stopping" && s !== "waking" && s !== "starting") break;
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    const c = this.get(computerId);
-    if (c.state === "sleeping" || !(await this.containerRunning(c.container))) {
-      await this.wake(computerId);
-    }
-    // Register the call as an operation so idle evaluation cannot sleep
-    // the computer mid-call, whatever lease discipline the caller used.
+    this.get(computerId);
     const op = this.beginOperation(computerId, "guest-call", "");
     try {
+      await this.wake(computerId);
       return await fn(this.get(computerId));
     } finally {
       this.endOperation(op.id);
     }
+  }
+
+  /** Deletion shares the transition queue with sleep/wake and refuses active work. */
+  async delete(computerId: string, remove: () => Promise<unknown>): Promise<void> {
+    await this.enqueueTransition(computerId, async () => {
+      const c = this.get(computerId);
+      if (this.activeOperations(computerId).length) throw new Error("computer has active operations; retry after they finish");
+      c.state = "deleting";
+      this.persist();
+      try {
+        await remove();
+        this.unregister(computerId);
+      } catch (e) {
+        c.state = "failed";
+        this.persist();
+        throw e;
+      }
+    });
   }
 }
 

@@ -163,7 +163,9 @@ export const TOOLS: ToolDef[] = [
     description: "Create a new computer (admin scope). Returns its id once ready.",
     inputSchema: obj({ name: { type: "string" }, cpuMillis: { type: "number" }, memoryMb: { type: "number" } }, ["name"]),
     run: async (ctx, args) => {
-      const name = String(args.name);
+      if (ctx.token.computerId) throw new Error("computer-bound tokens cannot create computers");
+      const name = String(args.name ?? "").trim();
+      if (!name || name.length > 60) throw new Error("name must be 1..60 characters");
       const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 20) || "computer";
       const id = `${slug}-${crypto.randomBytes(3).toString("hex")}`;
       const cpuMillis = Number(args.cpuMillis ?? 1000);
@@ -196,8 +198,7 @@ export const TOOLS: ToolDef[] = [
       if (String(args.confirmName) !== row.name) {
         return errText("confirmName must exactly match the computer name");
       }
-      await ctx.sup.remove(row.id, true);
-      ctx.engine.unregister(row.id);
+      await ctx.engine.delete(row.id, () => ctx.sup.remove(row.id, true));
       ctx.db.deleteComputer(row.id);
       ctx.db.audit(`mcp:${ctx.token.name}`, "computer.delete", row.id, { name: row.name });
       return text({ deleted: row.id });

@@ -84,6 +84,10 @@ const MIGRATIONS: string[] = [
   // v2: remember whether the host enforced this computer's CPU/RAM
   // limits at creation, so the UI can stay honest after restarts.
   `ALTER TABLE computers ADD COLUMN limits_enforced INTEGER;`,
+  // Database-level singleton ownership holds across multiple server processes.
+  `CREATE TRIGGER one_owner BEFORE INSERT ON users
+   WHEN (SELECT COUNT(*) FROM users) >= 1
+   BEGIN SELECT RAISE(ABORT, 'setup already completed'); END;`,
 ];
 
 export class Db {

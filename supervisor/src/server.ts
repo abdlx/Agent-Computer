@@ -26,6 +26,8 @@
 import * as http from "node:http";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
+import * as path from "node:path";
+import { admission, validateLimits } from "./resources.ts";
 
 const SOCK = process.env.ACP_SUPERVISOR_SOCK ?? "/run/acp/supervisor.sock";
 const SECRET = process.env.ACP_SUPERVISOR_SECRET ?? "";
@@ -36,6 +38,23 @@ const NETWORK = process.env.ACP_GUEST_NETWORK ?? "none"; // this dev VM has no b
 if (!SECRET) {
   console.error("ACP_SUPERVISOR_SECRET is required");
   process.exit(1);
+}
+
+const RUNTIME_VOLUME = process.env.ACP_RUNTIME_VOLUME ?? "agentcomputer_acp-run";
+const RUNTIME_DIR = path.dirname(SOCK);
+const REGISTRY_FILE = process.env.ACP_REGISTRY_FILE ?? "/data/supervisor/registry.json";
+type Identity = { containerId: string; volume: string; mountpoint: string };
+let identities: Record<string, Identity> = {};
+try {
+  identities = JSON.parse(fs.readFileSync(REGISTRY_FILE, "utf8"));
+  if (!identities || Array.isArray(identities) || typeof identities !== "object") throw new Error("invalid registry");
+} catch (e) {
+  if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+}
+function saveIdentities() {
+  fs.mkdirSync(path.dirname(REGISTRY_FILE), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(`${REGISTRY_FILE}.tmp`, JSON.stringify(identities), { mode: 0o600 });
+  fs.renameSync(`${REGISTRY_FILE}.tmp`, REGISTRY_FILE);
 }
 
 const idOk = (id: string) => /^[a-z0-9][a-z0-9-]{2,40}$/.test(id);
@@ -76,13 +95,20 @@ interface InspectData {
 }
 
 async function inspectManaged(id: string): Promise<InspectData> {
+  if (!idOk(id)) throw Object.assign(new Error("invalid computerId"), { code: 400 });
+  const identity = Object.hasOwn(identities, id) ? identities[id] : undefined;
+  if (!identity) throw Object.assign(new Error("computer is not registered with this supervisor"), { code: 403 });
   const name = containerName(id);
   const { status, data } = await dockerCall<InspectData>("GET", `/containers/${name}/json`);
   if (status === 404) throw Object.assign(new Error(`computer ${id} not found`), { code: 404 });
   if (status !== 200) throw Object.assign(new Error(`inspect failed: ${status}`), { code: 502 });
   const labels = data.Config.Labels ?? {};
-  if (data.Name !== `/${name}` || labels["acp.managed"] !== "true" || labels["acp.computer"] !== id) {
+  if (data.Id !== identity.containerId || data.Name !== `/${name}` || labels["acp.managed"] !== "true" || labels["acp.computer"] !== id) {
     throw Object.assign(new Error(`container ${name} is not an ACP-managed computer`), { code: 403 });
+  }
+  const home = data.Mounts.find((m) => m.Destination === "/home/agent");
+  if (home?.Name !== identity.volume || data.HostConfig.Privileged) {
+    throw Object.assign(new Error("managed container configuration changed"), { code: 403 });
   }
   return data;
 }
@@ -104,33 +130,24 @@ async function createComputer(body: Record<string, unknown>) {
   if (!Number.isFinite(memoryMb) || memoryMb < 256 || memoryMb > 16384) {
     throw Object.assign(new Error("memoryMb out of range 256..16384"), { code: 400 });
   }
-  const guestToken = crypto.randomBytes(24).toString("hex");
-
-  // Host disk guard: refuse creation when the Docker data filesystem is
-  // nearly full — a guest home volume starts at ~2.4GB (browser cache
-  // copy) and a full host disk damages every computer at once.
-  const minFreeGb = Number(process.env.ACP_MIN_FREE_DISK_GB ?? 5);
-  if (minFreeGb > 0) {
-    const info = await dockerCall<{ DockerRootDir?: string }>("GET", "/info");
-    const root = info.data?.DockerRootDir || "/var/lib/docker";
-    // In containerized deployments only the volumes subtree may be
-    // visible at the host's path; measure the first candidate that
-    // exists. All candidates live on the filesystem that holds the
-    // guest volumes on any standard Docker install.
-    let freeGb: number | null = null;
-    for (const candidate of [`${root}/volumes`, root, "/"]) {
-      try {
-        const st = fs.statfsSync(candidate);
-        freeGb = (Number(st.bavail) * Number(st.bsize)) / 1e9;
-        break;
-      } catch { /* try the next candidate */ }
-    }
-    if (freeGb !== null && freeGb < minFreeGb) {
-      throw Object.assign(new Error(
-        `insufficient free disk on host: ${freeGb.toFixed(1)} GB free on the Docker volumes filesystem; ` +
-        `${minFreeGb} GB minimum (ACP_MIN_FREE_DISK_GB)`), { code: 507 });
-    }
+  if (Object.hasOwn(identities, id)) throw Object.assign(new Error("computer already registered"), { code: 409 });
+  const existing = await dockerCall("GET", `/containers/${containerName(id)}/json`);
+  if (existing.status !== 404) throw Object.assign(new Error("container name unavailable"), { code: 409 });
+  const existingVolume = await dockerCall("GET", `/volumes/${volumeName(id)}`);
+  if (existingVolume.status !== 404) throw Object.assign(new Error("volume name unavailable"), { code: 409 });
+  const runtime = await dockerCall<{ Mountpoint: string }>("GET", `/volumes/${encodeURIComponent(RUNTIME_VOLUME)}`);
+  if (runtime.status !== 200 || !path.isAbsolute(runtime.data.Mountpoint)) {
+    throw Object.assign(new Error("runtime volume unavailable"), { code: 503 });
   }
+  validateLimits(memoryMb, cpuMillis);
+  const decision = await resources({ memoryMb, cpuMillis });
+  if (!decision.allowed) throw Object.assign(new Error(decision.reason), { code: 409 });
+  const localRuntime = path.join(RUNTIME_DIR, "guests", id);
+  fs.mkdirSync(localRuntime, { recursive: true, mode: 0o700 });
+  fs.chownSync(localRuntime, 1000, 1000);
+  const guestRuntime = `${runtime.data.Mountpoint}/guests/${id}`;
+  validateLimits(memoryMb, cpuMillis);
+  const guestToken = crypto.randomBytes(24).toString("hex");
 
   // Home volume first.
   const vol = await dockerCall("POST", "/volumes/create",
@@ -139,26 +156,23 @@ async function createComputer(body: Record<string, unknown>) {
   const volInfo = await dockerCall<{ Mountpoint: string }>("GET", `/volumes/${volumeName(id)}`);
   const mountpoint = (volInfo.data as { Mountpoint: string }).Mountpoint;
 
-  // NOTE: NetworkMode "none" is OMITTED, not set. Measured on the dev VM:
-  // explicitly setting it makes dockerd program the (null) network via a
-  // libnetwork prestart hook that re-executes the daemon binary — which
-  // sandboxed hosts block, failing every start. Omitting it yields the
-  // same no-network result through the normal path. A real bridge
-  // network name is set explicitly, as production uses.
+  // Fail closed: network isolation must never depend on a daemon default.
   const useNetwork = NETWORK !== "none";
   const payload = {
     Image: GUEST_IMAGE,
-    Env: [`GUEST_TOKEN=${guestToken}`],
+    Env: [`GUEST_TOKEN=${guestToken}`, "GUEST_SUPERVISOR_SOCK=/run/acp-guest/api.sock"],
     Labels: {
       "acp.managed": "true",
       "acp.computer": id,
       "acp.name": String(body.displayName ?? id).slice(0, 80),
     },
     HostConfig: {
-      Binds: [`${volumeName(id)}:/home/agent`],
+      Binds: [`${volumeName(id)}:/home/agent`, `${guestRuntime}:/run/acp-guest`],
       NanoCpus: Math.round(cpuMillis * 1_000_000),
       Memory: Math.round(memoryMb * 1024 * 1024),
-      ...(useNetwork ? { NetworkMode: NETWORK } : {}),
+      NetworkMode: NETWORK,
+      MemorySwap: Math.round(memoryMb * 1024 * 1024),
+      PidsLimit: 512,
       Privileged: false,
       // Minimal capability set the guest actually needs: supervisord
       // drops to the agent user (SETUID/SETGID), the entrypoint fixes
@@ -176,32 +190,12 @@ async function createComputer(body: Record<string, unknown>) {
   };
   const created = await dockerCall<{ Id: string }>(
     "POST", `/containers/create?name=${containerName(id)}`, payload);
-  let limitsEnforced = true;
-  if (created.status !== 201) {
-    const msg = JSON.stringify(created.data);
-    // Some kernels (notably sandboxed dev hosts without delegated cgroup
-    // controllers) reject CPU/memory limits outright. That is an
-    // environment capability, not a caller error: retry once WITHOUT
-    // limits and report limitsEnforced=false so the control plane can
-    // surface it — never silently.
-    if (created.status === 400 && /NanoCPUs|CFS|memory.*cgroup|cgroup.*(cpu|memory)/i.test(msg)) {
-      const bare = JSON.parse(JSON.stringify(payload)) as typeof payload;
-      delete (bare.HostConfig as Record<string, unknown>).NanoCpus;
-      delete (bare.HostConfig as Record<string, unknown>).Memory;
-      const retry = await dockerCall<{ Id: string }>(
-        "POST", `/containers/create?name=${containerName(id)}`, bare);
-      if (retry.status !== 201) {
-        throw Object.assign(
-          new Error(`container create failed after limits fallback: ${retry.status} ${JSON.stringify(retry.data).slice(0, 300)}`),
-          { code: 502 });
-      }
-      limitsEnforced = false;
-    } else {
-      throw Object.assign(
-        new Error(`container create failed: ${created.status} ${msg.slice(0, 300)}`),
-        { code: 502 });
-    }
+  if (created.status !== 201 || !created.data.Id) {
+    throw Object.assign(new Error(`container creation rejected: ${created.status}; resource enforcement is required`), { code: 502 });
   }
+  identities[id] = { containerId: created.data.Id, volume: volumeName(id), mountpoint };
+  saveIdentities();
+  const limitsEnforced = true;
   return {
     computerId: id,
     container: containerName(id),
@@ -209,14 +203,14 @@ async function createComputer(body: Record<string, unknown>) {
     guestToken,
     limitsEnforced,
     // Dev-VM guest channel: the supervisor's unix socket in the home volume.
-    socketPath: `${mountpoint}/.supervisor/api.sock`,
+    socketPath: `${localRuntime}/api.sock`,
   };
 }
 
 async function stats(id: string) {
-  await inspectManaged(id);
+  const managed = await inspectManaged(id);
   const { status, data } = await dockerCall<Record<string, unknown>>(
-    "GET", `/containers/${containerName(id)}/stats?stream=false`, undefined, 30000);
+    "GET", `/containers/${managed.Id}/stats?stream=false`, undefined, 30000);
   if (status !== 200) throw Object.assign(new Error(`stats failed: ${status}`), { code: 502 });
   const d = data as {
     cpu_stats?: { cpu_usage?: { total_usage?: number }; system_cpu_usage?: number; online_cpus?: number };
@@ -239,32 +233,74 @@ async function stats(id: string) {
   };
 }
 
+async function resources(requested = { memoryMb: 256, cpuMillis: 250 }) {
+  const info = await dockerCall<{ MemTotal: number; NCPU: number; Architecture: string; CgroupVersion: string; MemoryLimit: boolean; CpuCfsQuota: boolean }>("GET", "/info");
+  if (info.status !== 200 || !info.data.MemoryLimit || !info.data.CpuCfsQuota) {
+    throw Object.assign(new Error("Docker CPU and memory enforcement unavailable"), { code: 503 });
+  }
+  const meminfo = fs.readFileSync(process.env.ACP_HOST_MEMINFO ?? "/proc/meminfo", "utf8");
+  const available = /^MemAvailable:\s+(\d+) kB$/m.exec(meminfo);
+  if (!available) throw Object.assign(new Error("host available memory unavailable"), { code: 503 });
+  const st = fs.statfsSync(process.env.ACP_STORAGE_PROBE ?? "/docker-storage");
+  const running: { memoryMb: number; cpuMillis: number }[] = [];
+  for (const id of Object.keys(identities)) {
+    const d = await inspectManaged(id);
+    if (d.State.Running) {
+      const hc = d.HostConfig as unknown as { Memory: number; NanoCpus: number };
+      if (!(hc.Memory > 0) || !(hc.NanoCpus > 0)) throw Object.assign(new Error("running computer lacks enforced limits"), { code: 503 });
+      running.push({ memoryMb: hc.Memory / 1048576, cpuMillis: hc.NanoCpus / 1000000 });
+    }
+  }
+  return admission({ totalMemoryMb: info.data.MemTotal / 1048576,
+    availableMemoryMb: Number(available[1]) / 1024, cpuMillis: info.data.NCPU * 1000,
+    freeDiskGb: Number(st.bavail) * Number(st.bsize) / 1e9 }, running, requested,
+    { reserveMemoryMb: Number(process.env.ACP_HOST_RESERVE_MB ?? Math.max(1024, Math.ceil(info.data.MemTotal / 1048576 * 0.2))),
+      minFreeDiskGb: Number(process.env.ACP_MIN_FREE_DISK_GB ?? 5),
+      maxRunning: Number(process.env.ACP_MAX_RUNNING ?? 4), cpuOvercommit: Number(process.env.ACP_CPU_OVERCOMMIT ?? 1) });
+}
+
 const routes: Record<string, (body: Record<string, unknown>) => Promise<unknown>> = {
+  "/resources": () => resources(),
   "/create": (b) => createComputer(b),
   "/start": async (b) => {
     const id = String(b.computerId ?? "");
-    await inspectManaged(id);
-    const r = await dockerCall("POST", `/containers/${containerName(id)}/start`);
+    const d = await inspectManaged(id);
+    if (!d.State.Running) {
+      const hc = d.HostConfig as unknown as { Memory: number; NanoCpus: number };
+      const decision = await resources({ memoryMb: hc.Memory / 1048576, cpuMillis: hc.NanoCpus / 1000000 });
+      if (!decision.allowed) throw Object.assign(new Error(decision.reason), { code: 409 });
+    }
+    const r = await dockerCall("POST", `/containers/${d.Id}/start`);
     if (r.status !== 204 && r.status !== 304) throw Object.assign(new Error(`start failed: ${r.status}`), { code: 502 });
     return { ok: true };
   },
   "/stop": async (b) => {
     const id = String(b.computerId ?? "");
-    await inspectManaged(id);
+    const managed = await inspectManaged(id);
     const grace = Math.min(60, Math.max(1, Number(b.graceS ?? 20)));
-    const r = await dockerCall("POST", `/containers/${containerName(id)}/stop?t=${grace}`, undefined, (grace + 30) * 1000);
+    const r = await dockerCall("POST", `/containers/${managed.Id}/stop?t=${grace}`, undefined, (grace + 30) * 1000);
     if (r.status !== 204 && r.status !== 304) throw Object.assign(new Error(`stop failed: ${r.status}`), { code: 502 });
     return { ok: true };
   },
   "/remove": async (b) => {
     const id = String(b.computerId ?? "");
-    await inspectManaged(id);
-    const r = await dockerCall("DELETE", `/containers/${containerName(id)}?force=true`);
+    const managed = await inspectManaged(id);
+    // Validate storage before removing the container so a failed check is recoverable.
+    if (b.removeVolume === true) {
+      const volume = await dockerCall<{ Mountpoint: string; Labels: Record<string, string> }>("GET", `/volumes/${volumeName(id)}`);
+      if (volume.status !== 200 || volume.data.Mountpoint !== identities[id].mountpoint ||
+          volume.data.Labels?.["acp.computer"] !== id || volume.data.Labels?.["acp.managed"] !== "true") {
+        throw Object.assign(new Error("volume identity mismatch; refusing deletion"), { code: 403 });
+      }
+    }
+    const r = await dockerCall("DELETE", `/containers/${managed.Id}?force=true`);
     if (r.status !== 204 && r.status !== 404) throw Object.assign(new Error(`remove failed: ${r.status}`), { code: 502 });
     if (b.removeVolume === true) {
-      const v = await dockerCall("DELETE", `/volumes/${volumeName(id)}?force=true`);
+      const v = await dockerCall("DELETE", `/volumes/${volumeName(id)}`);
       if (v.status !== 204 && v.status !== 404) throw Object.assign(new Error(`volume remove failed: ${v.status}`), { code: 502 });
     }
+    delete identities[id];
+    saveIdentities();
     return { ok: true };
   },
   "/inspect": async (b) => {
@@ -279,6 +315,8 @@ const routes: Record<string, (body: Record<string, unknown>) => Promise<unknown>
   "/ping": async () => ({ ok: true, image: GUEST_IMAGE, network: NETWORK }),
 };
 
+// Serialize privileged mutations, including create, to prevent ownership races.
+let requestChain: Promise<unknown> = Promise.resolve();
 const server = http.createServer((req, res) => {
   const send = (code: number, obj: unknown) => {
     res.writeHead(code, { "content-type": "application/json" });
@@ -290,17 +328,36 @@ const server = http.createServer((req, res) => {
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
     return send(401, { error: "unauthorized" });
   }
-  const handler = routes[(req.url ?? "").split("?")[0]];
+  const routeName = (req.url ?? "").split("?")[0];
+  const handler = Object.hasOwn(routes, routeName) ? routes[routeName] : undefined;
   if (req.method !== "POST" || !handler) return send(404, { error: "no such route" });
   const chunks: Buffer[] = [];
-  req.on("data", (c) => chunks.push(c as Buffer));
+  let size = 0;
+  req.on("data", (c) => {
+    size += c.length;
+    if (size > 65536) { req.destroy(); return; }
+    chunks.push(c as Buffer);
+  });
   req.on("end", async () => {
     let body: Record<string, unknown> = {};
     try { body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch {
       return send(400, { error: "invalid JSON" });
     }
+    if (!body || typeof body !== "object" || Array.isArray(body)) return send(400, { error: "body must be an object" });
+    const fields: Record<string, string[]> = {
+      "/create": ["computerId", "displayName", "cpuMillis", "memoryMb"],
+      "/start": ["computerId"], "/stop": ["computerId", "graceS"],
+      "/remove": ["computerId", "removeVolume"], "/inspect": ["computerId"],
+      "/stats": ["computerId"], "/ping": [], "/resources": [],
+    };
+    if (Object.keys(body).some((key) => !fields[routeName].includes(key))) return send(400, { error: "unknown request field" });
+    if ("computerId" in body && (typeof body.computerId !== "string" || !idOk(body.computerId))) return send(400, { error: "invalid computerId" });
+    if (routeName === "/stop" && body.graceS !== undefined && (!Number.isInteger(body.graceS) || Number(body.graceS) < 1 || Number(body.graceS) > 60)) return send(400, { error: "invalid stop grace" });
+    if (routeName === "/remove" && body.removeVolume !== undefined && typeof body.removeVolume !== "boolean") return send(400, { error: "invalid removeVolume" });
     try {
-      send(200, await handler(body));
+      const operation = requestChain.then(() => handler(body));
+      requestChain = operation.catch(() => undefined);
+      send(200, await operation);
     } catch (e) {
       const err = e as Error & { code?: number };
       send(err.code ?? 500, { error: err.message });
@@ -309,7 +366,7 @@ const server = http.createServer((req, res) => {
 });
 
 try { fs.unlinkSync(SOCK); } catch { /* fresh path */ }
-fs.mkdirSync(SOCK.split("/").slice(0, -1).join("/"), { recursive: true });
+fs.mkdirSync(path.dirname(SOCK), { recursive: true });
 process.on("unhandledRejection", (e) => {
   console.error("unhandled rejection (continuing):", e);
 });

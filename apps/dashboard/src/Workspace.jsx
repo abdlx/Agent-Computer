@@ -80,7 +80,7 @@ export default function Workspace({ computerId, navigate }) {
         <button className="btn ghost" onClick={() => navigate("#/computers")}>← Computers</button>
         <h2>{computer.name}</h2>
         <span className="badge" style={{ background: stateColor(computer.state) }}>{computer.state}</span>
-        <span className="muted">{computer.cpuMillis / 1000} CPU · {computer.memoryMb} MB RAM · {computer.diskGb} GB disk</span>
+        <span className="muted">{computer.cpuMillis / 1000} CPU · {computer.memoryMb} MB RAM · persistent disk (no hard quota)</span>
         <span className="spacer" />
         {stats?.stats && (
           <span className="muted">

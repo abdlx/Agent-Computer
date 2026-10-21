@@ -1,3 +1,31 @@
+# Current hardening checkpoint ? 2026-10-21
+
+Release verdict: **NOT PRODUCTION READY**. Windows local testing only. No Docker executable/Linux WSL distribution is available. User explicitly forbids SSH or remote hosts. Historical results below are retained but do not validate this branch.
+
+Environment: Windows PowerShell, Node v25.3.0, Python 3.12.10. Branch `production-hardening`.
+
+| Command | Observed result | Scope / limits |
+| --- | --- | --- |
+| `node --test tests/control_plane_http.test.mjs tests/resource_scheduler.test.mjs tests/supervisor_security.test.mjs tests/security_boundaries.test.mjs` | 17/17 pass | Real HTTP control-plane/SQLite/session/token flow, real supervisor against fake Docker, policy/ownership/security/lifecycle unit tests; no real guest |
+| `node tests/engine_races.mjs` | 13 checks pass | Fake driver and real local HTTP socket; original Linux-only socket changed to portable named pipe on Windows |
+| `python guest/supervisor/trajectory.py` | PASS | Existing cursor trajectory self-test |
+| `node --check` for all control-plane/supervisor TypeScript files | Pass | Syntax only; not TypeScript type checking |
+| `python -m py_compile guest/supervisor/supervisor.py guest/supervisor/browser_owner.py guest/supervisor/trajectory.py` | Pass | Syntax only; no X11 or browser execution |
+| `npm ci --no-fund` in `apps/dashboard` | Pass, 63 packages installed | Dependency install, not vulnerability clearance |
+| `npm run build` in `apps/dashboard` | Pass, 183 transformed modules | Production build; no visual/browser E2E proof |
+| `npm audit --json` in `apps/dashboard` | FAILED: registry HTTP 503 | Vulnerability status unresolved |
+| `git diff --check` | Pass | Patch whitespace validation |
+
+The first baseline race-suite attempt failed with Windows EACCES on `/tmp/acp-race-guest.sock`. Only the test transport path was made platform-specific; original assertions were retained and all now pass. New tests cover malformed supervisor requests, forged IDs with valid-looking labels, foreign containers, unsupported resource controls, volume-identity rejection before deletion, and serialized competing starts. HTTP integration covers concurrent first-run requests (one success, two 409s), unauthorized requests, CSRF, foreign Origin, resource/readiness endpoints, token mint/revoke and logout invalidation.
+
+Not run: historical Phase 0?7 Docker suites (hardcoded previous VM paths and Docker prerequisites), actual Linux cgroup enforcement, guest mount/network inspection, VNC shared desktop, Hermes, image build/scan, backups/restores, reboot/fault injection, Coolify and resource benchmarks. No release gate is inferred from fake-Docker tests.
+
+Evidence summary: `tests/evidence/production-local-checkpoint.json`. Reproduce the commands above; benchmark and per-gate gaps are in `BENCHMARKS.md` and `RELEASE_CHECKLIST.md`.
+
+---
+
+## Historical results (superseded as release certification)
+
 # TEST_RESULTS
 Measured results only. Environment recorded per run.
 

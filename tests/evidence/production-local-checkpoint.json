@@ -1,0 +1,47 @@
+{
+  "date": "2026-10-21",
+  "branch": "production-hardening",
+  "verdict": "not production ready",
+  "environment": {
+    "os": "Windows",
+    "node": "25.3.0",
+    "python": "3.12.10",
+    "docker": "unavailable",
+    "remote_access": "explicitly prohibited by user"
+  },
+  "observed_checks": {
+    "node_tests": {
+      "pass": 17,
+      "fail": 0,
+      "command": "node --test tests/control_plane_http.test.mjs tests/resource_scheduler.test.mjs tests/supervisor_security.test.mjs tests/security_boundaries.test.mjs"
+    },
+    "lifecycle_race_checks": {
+      "pass": 13,
+      "command": "node tests/engine_races.mjs"
+    },
+    "trajectory": "PASS",
+    "typescript_syntax": "PASS (node --check; not type checking)",
+    "python_syntax": "PASS",
+    "dashboard_build": {
+      "status": "PASS",
+      "modules": 183,
+      "js_bytes_approx": 447520,
+      "gzip_js_bytes_approx": 128000
+    },
+    "npm_audit": {
+      "status": "FAILED",
+      "reason": "registry HTTP 503"
+    },
+    "diff_whitespace": "PASS"
+  },
+  "not_executed": [
+    "real Docker/Compose",
+    "Linux cgroup enforcement",
+    "guest desktop and browser E2E",
+    "Hermes",
+    "backup/restore",
+    "reboot and fault injection",
+    "Coolify",
+    "runtime benchmarks"
+  ]
+}

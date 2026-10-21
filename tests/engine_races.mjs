@@ -9,7 +9,7 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import { LifecycleEngine } from "../apps/control-plane/src/lifecycle.ts";
 
-const SOCK = "/tmp/acp-race-guest.sock";
+const SOCK = process.platform === "win32" ? `\\\\.\\pipe\\acp-race-${process.pid}` : `/tmp/acp-race-${process.pid}.sock`;
 try { fs.unlinkSync(SOCK); } catch { /* fresh */ }
 
 // ---- fake guest: /health reports ancient activity; /browser/close ok ----

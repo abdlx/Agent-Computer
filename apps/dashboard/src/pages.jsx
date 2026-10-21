@@ -3,6 +3,7 @@ import { api, stateColor, timeAgo } from "./api.js";
 
 export function Computers({ navigate }) {
   const [computers, setComputers] = useState([]);
+  const [resources, setResources] = useState(null);
   const [error, setError] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [deleting, setDeleting] = useState(null);
@@ -11,6 +12,7 @@ export function Computers({ navigate }) {
     try {
       const r = await api("GET", "/api/computers");
       setComputers(r.computers);
+      setResources(await api("GET", "/api/resources"));
     } catch (e) { setError(e.message); }
   };
   useEffect(() => { load(); const t = setInterval(load, 4000); return () => clearInterval(t); }, []);
@@ -27,6 +29,11 @@ export function Computers({ navigate }) {
         <span className="spacer" />
         <button className="btn primary" onClick={() => setShowCreate(true)}>+ Add computer</button>
       </div>
+      {resources && <div className="panel" aria-live="polite">
+        <p>Host RAM: {Math.round(resources.capacity.totalMemoryMb)} MB total ? {Math.round(resources.capacity.availableMemoryMb)} MB available ? {resources.policy.reserveMemoryMb} MB reserved</p>
+        <p>Computers: {resources.runningCount} running ? {resources.memoryCommittedMb} MB committed ? {resources.capacity.cpuMillis / 1000} CPU capacity ? {resources.capacity.freeDiskGb.toFixed(1)} GB disk free</p>
+        {!resources.allowed && <p className="error">{resources.reason}</p>}
+      </div>}
       {error && <p className="error">{error}</p>}
       {computers.length === 0 && (
         <div className="empty">
@@ -42,7 +49,7 @@ export function Computers({ navigate }) {
               <span className="badge" style={{ background: stateColor(c.state) }}>{c.state}</span>
             </div>
             <p className="muted small">
-              {c.cpuMillis / 1000} CPU · {c.memoryMb} MB RAM · {c.diskGb} GB disk<br />
+              {c.cpuMillis / 1000} CPU · {c.memoryMb} MB RAM · persistent disk (no hard quota)<br />
               created {timeAgo(c.createdAt)}
               {c.limitsEnforced === false && <><br /><span title="This host's kernel cannot apply cgroup CPU/RAM limits">⚠ limits not enforced on this host</span></>}
             </p>
@@ -56,17 +63,17 @@ export function Computers({ navigate }) {
           </div>
         ))}
       </div>
-      {showCreate && <CreateModal close={() => setShowCreate(false)} done={() => { setShowCreate(false); load(); }} />}
+      {showCreate && <CreateModal resources={resources} close={() => setShowCreate(false)} done={() => { setShowCreate(false); load(); }} />}
       {deleting && <DeleteModal computer={deleting} close={() => setDeleting(null)} done={() => { setDeleting(null); load(); }} />}
     </div>
   );
 }
 
-function CreateModal({ close, done }) {
+function CreateModal({ close, done, resources }) {
   const [name, setName] = useState("");
   const [cpuMillis, setCpu] = useState(1000);
   const [memoryMb, setMem] = useState(2048);
-  const [diskGb, setDisk] = useState(20);
+  const diskGb = 20;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [note, setNote] = useState("");
@@ -90,23 +97,20 @@ function CreateModal({ close, done }) {
         <label>Name<input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Research Box" required autoFocus /></label>
         <label>CPU
           <select value={cpuMillis} onChange={(e) => setCpu(e.target.value)}>
-            <option value={500}>0.5 cores</option><option value={1000}>1 core</option>
-            <option value={2000}>2 cores</option><option value={4000}>4 cores</option>
+            <option disabled={!resources || resources.cpuCommittedMillis + 500 > resources.capacity.cpuMillis * resources.policy.cpuOvercommit} value={500}>0.5 cores</option><option disabled={!resources || resources.cpuCommittedMillis + 1000 > resources.capacity.cpuMillis * resources.policy.cpuOvercommit} value={1000}>1 core</option>
+            <option disabled={!resources || resources.cpuCommittedMillis + 2000 > resources.capacity.cpuMillis * resources.policy.cpuOvercommit} value={2000}>2 cores</option><option disabled={!resources || resources.cpuCommittedMillis + 4000 > resources.capacity.cpuMillis * resources.policy.cpuOvercommit} value={4000}>4 cores</option>
           </select></label>
         <label>Memory
           <select value={memoryMb} onChange={(e) => setMem(e.target.value)}>
-            <option value={1024}>1 GB</option><option value={2048}>2 GB</option>
-            <option value={4096}>4 GB</option><option value={8192}>8 GB</option>
+            <option disabled={!resources || resources.memoryHeadroomMb < 1024} value={1024}>1 GB</option><option disabled={!resources || resources.memoryHeadroomMb < 2048} value={2048}>2 GB</option>
+            <option disabled={!resources || resources.memoryHeadroomMb < 4096} value={4096}>4 GB</option><option disabled={!resources || resources.memoryHeadroomMb < 8192} value={8192}>8 GB</option>
           </select></label>
-        <label>Disk
-          <select value={diskGb} onChange={(e) => setDisk(e.target.value)}>
-            <option value={10}>10 GB</option><option value={20}>20 GB</option><option value={40}>40 GB</option>
-          </select></label>
+        <p className="muted">Files persist on the host disk. Hard storage quotas are unavailable.</p>
         {error && <p className="error">{error}</p>}
         {note && <p className="muted">{note}</p>}
         <div className="modal-actions">
           <button type="button" className="btn" onClick={close}>Cancel</button>
-          <button className="btn primary" disabled={busy}>{busy ? "Creating…" : "Create"}</button>
+          <button className="btn primary" disabled={busy || !resources || !resources.allowed || Number(memoryMb) > resources.memoryHeadroomMb || resources.cpuCommittedMillis + Number(cpuMillis) > resources.capacity.cpuMillis * resources.policy.cpuOvercommit}>{busy ? "Creating…" : "Create"}</button>
         </div>
       </form>
     </div>

@@ -1,3 +1,20 @@
+# Current hardening status ? 2026-10-21
+
+This section supersedes conflicting historical Phase 0?7 claims below. This branch has not been validated on a running Linux Docker host. No SSH or remote access is authorized in this session.
+
+- The control plane has only its database and a **read-only runtime socket volume**. It has no Docker socket and no Docker volume-tree mount.
+- Each guest receives its own home volume and its own generated runtime subdirectory at `/run/acp-guest`; it cannot see the supervisor socket or sibling runtime directories through that mount.
+- The supervisor persists exact Docker container IDs in its private data volume. Labels/names alone no longer establish ownership. Operations address the verified Docker ID. Old installations require a reviewed identity migration; automatic adoption is deliberately unavailable.
+- The supervisor requires CPU/memory controls, sets no-swap and PID limits, and never retries without limits. Network mode is explicit even on unsupported development hosts.
+- A global supervisor queue serializes create/start and all privileged requests. Every start recalculates host memory availability and commitments. See `RESOURCE_SCHEDULER.md` for capabilities and limitations.
+- Lifecycle calls acquire operation protection before wake. Sleep and deletion refuse active work. Deletion uses the transition queue. Restart discards operation records belonging to the dead process.
+- A database trigger enforces a single initial owner across connections. HTTP and VNC browser origins are checked. Forwarded HTTPS headers require explicit proxy trust. VNC sessions are rechecked at lease renewal.
+- Docker containers share the host kernel and are not equivalent to virtual machines.
+
+The following architecture text is historical implementation evidence and is retained for provenance; its old broad-mount design, unenforced-limit fallback and environment assumptions no longer describe this branch.
+
+---
+
 # ARCHITECTURE
 
 Agent Computer Platform (ACP): a self-hosted, single-owner platform that

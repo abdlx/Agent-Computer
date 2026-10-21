@@ -1,3 +1,13 @@
+# Production hardening checkpoint ? 2026-10-21
+
+Current status: in progress, **NOT PRODUCTION READY**. Branch `production-hardening`. No SSH/remote access authorized. Local Docker runtime unavailable.
+
+Implemented initial supervisor ownership/mount hardening, fail-closed CPU/memory controls, host reservation and serialized admission, resource dashboard integration, lifecycle operation protections, setup/origin/session improvements and regression tests. Local verification: 17 Node tests + 13 lifecycle race checks + trajectory self-test pass; dashboard builds. npm vulnerability audit failed with registry 503. Full release evidence and remaining work: `RELEASE_CHECKLIST.md`.
+
+The historical "ALL PHASES COMPLETE" statements below describe the former constrained sandbox run, not production certification of this branch.
+
+---
+
 # BUILD_PROGRESS
 
 ## Current phase: Phase 0 — Build and validate the real computer

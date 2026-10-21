@@ -24,6 +24,7 @@ import { SupervisorClient, SupervisorDriver } from "./supervisorClient.ts";
 import {
   LifecycleEngine, guestCall, type EngineState, type Store,
 } from "./lifecycle.ts";
+import { originAllowed } from "./security.ts";
 import { makeMcpHandler } from "./mcp.ts";
 
 const PORT = Number(process.env.ACP_PORT ?? 8787);
@@ -114,7 +115,7 @@ function publicComputer(row: ComputerRow): Record<string, unknown> {
   return {
     id: row.id, name: row.name, state,
     cpuMillis: row.cpuMillis, memoryMb: row.memoryMb, diskGb: row.diskGb,
-    limitsEnforced: row.limitsEnforced,
+    limitsEnforced: row.limitsEnforced, storageQuotaSupported: false,
     createdAt: row.createdAt, updatedAt: row.updatedAt,
   };
 }
@@ -142,7 +143,11 @@ function readBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
     req.on("end", () => {
       const text = Buffer.concat(chunks).toString("utf8");
       if (!text) return resolve({});
-      try { resolve(JSON.parse(text)); } catch { reject(new Error("invalid JSON")); }
+      try {
+        const value = JSON.parse(text);
+        if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error();
+        resolve(value);
+      } catch { reject(new Error("body must be a JSON object")); }
     });
     req.on("error", reject);
   });
@@ -175,7 +180,7 @@ function match(pattern: string, path: string): Record<string, string> | null {
   if (p.length !== a.length) return null;
   const params: Record<string, string> = {};
   for (let i = 0; i < p.length; i++) {
-    if (p[i].startsWith(":")) params[p[i].slice(1)] = decodeURIComponent(a[i]);
+    if (p[i].startsWith(":")) { try { params[p[i].slice(1)] = decodeURIComponent(a[i]); } catch { return null; } }
     else if (p[i] !== a[i]) return null;
   }
   return params;
@@ -183,6 +188,10 @@ function match(pattern: string, path: string): Record<string, string> | null {
 
 // ---- routes --------------------------------------------------------------------
 route("GET", "/api/health", false, async () => ({ json: { ok: true } }));
+route("GET", "/api/ready", true, async () => {
+  try { await sup.ping(); await sup.call("/resources", {}); return { json: { ready: true } }; }
+  catch { return { status: 503, json: { ready: false, error: "supervisor or host resource controls unavailable" } }; }
+});
 
 route("GET", "/api/setup/status", false, async () => ({
   json: { needsSetup: db.userCount() === 0 },
@@ -194,7 +203,12 @@ route("POST", "/api/setup", false, async (ctx) => {
   const password = String(ctx.body.password ?? "");
   if (username.length < 3) return { status: 400, json: { error: "username must be at least 3 characters" } };
   if (password.length < 10) return { status: 400, json: { error: "password must be at least 10 characters" } };
-  const user = db.createUser(username, hashPassword(password));
+  let user;
+  try { user = db.createUser(username, hashPassword(password)); }
+  catch (e) {
+    if (db.userCount() > 0) return { status: 409, json: { error: "setup already completed" } };
+    throw e;
+  }
   const { token, hash } = newSessionToken();
   db.createSession(hash, user.id, SESSION_TTL_MS);
   db.audit(username, "auth.setup", null, {});
@@ -238,6 +252,8 @@ route("POST", "/api/auth/logout", true, async (ctx) => {
 });
 
 route("GET", "/api/auth/me", true, async (ctx) => ({ json: { username: ctx.user!.username } }));
+
+route("GET", "/api/resources", true, async () => ({ json: await sup.call("/resources", {}) }));
 
 route("GET", "/api/computers", true, async () => ({
   json: { computers: db.computers().map(publicComputer) },
@@ -344,11 +360,10 @@ route("DELETE", "/api/computers/:id", true, async (ctx) => {
     return { status: 400, json: { error: "confirmName must exactly match the computer name" } };
   }
   try {
-    await sup.remove(row.id, true);
+    await engine.delete(row.id, () => sup.remove(row.id, true));
   } catch (e) {
     return { status: 502, json: { error: (e as Error).message } };
   }
-  engine.unregister(row.id);
   db.deleteComputer(row.id);
   db.audit(ctx.user!.username, "computer.delete", row.id, { name: row.name });
   return { json: { ok: true } };
@@ -436,6 +451,11 @@ const server = http.createServer(async (req, res) => {
   };
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = url.pathname;
+  const secureTransport = Boolean((req.socket as { encrypted?: boolean }).encrypted)
+    || (process.env.ACP_TRUST_PROXY === "true" && req.headers["x-forwarded-proto"] === "https");
+  if (!originAllowed(req.headers.origin, req.headers.host, secureTransport, process.env.ACP_PUBLIC_ORIGIN)) {
+    return send(403, { error: "origin not allowed" });
+  }
   if (path === "/mcp") {
     await mcpHandler(req, res);
     return;
@@ -459,7 +479,7 @@ const server = http.createServer(async (req, res) => {
       const cookies = parseCookies(req.headers.cookie);
       const sessionHash = cookies.acp_session ? sha256(cookies.acp_session) : null;
       const secure = Boolean((req.socket as { encrypted?: boolean }).encrypted)
-        || req.headers["x-forwarded-proto"] === "https";
+        || (process.env.ACP_TRUST_PROXY === "true" && req.headers["x-forwarded-proto"] === "https");
       const out = await r.handler({ user, body, params, sessionHash, secure });
       return send(out.status ?? 200, out.json ?? {}, out.headers ?? {});
     } catch (e) {
@@ -489,7 +509,7 @@ function serveStatic(urlPath: string, res: http.ServerResponse): boolean {
   }
   const rel = urlPath === "/" ? "index.html" : urlPath.slice(1);
   const file = path.resolve(DASH_DIR, rel);
-  if (file.startsWith(path.resolve(DASH_DIR))) {
+  if (file.startsWith(path.resolve(DASH_DIR) + path.sep)) {
     try {
       const data = fs.readFileSync(file);
       const ext = path.extname(file);
@@ -517,10 +537,15 @@ server.on("upgrade", async (req, socket, head) => {
   };
   const m = /^\/api\/computers\/([^/]+)\/vnc$/.exec((req.url ?? "").split("?")[0]);
   if (!m) return fail(404, "Not Found");
+  const secureTransport = Boolean((req.socket as { encrypted?: boolean }).encrypted)
+    || (process.env.ACP_TRUST_PROXY === "true" && req.headers["x-forwarded-proto"] === "https");
+  if (!originAllowed(req.headers.origin, req.headers.host, secureTransport, process.env.ACP_PUBLIC_ORIGIN)) return fail(403, "Forbidden");
   const cookies = parseCookies(req.headers.cookie);
   const user = cookies.acp_session ? db.sessionUser(sha256(cookies.acp_session)) : null;
   if (!user) return fail(401, "Unauthorized");
-  const row = db.computer(decodeURIComponent(m[1]));
+  let computerId: string;
+  try { computerId = decodeURIComponent(m[1]); } catch { return fail(400, "Bad Request"); }
+  const row = db.computer(computerId);
   if (!row) return fail(404, "Not Found");
   let leaseId: string | null = null;
   let renew: ReturnType<typeof setInterval> | null = null;
@@ -531,6 +556,7 @@ server.on("upgrade", async (req, socket, head) => {
     leaseId = lease.id;
     renew = setInterval(() => {
       try {
+        if (!db.sessionUser(sha256(cookies.acp_session))) { socket.destroy(); return; }
         engine.releaseLease(leaseId!);
         leaseId = engine.acquireLease(row.id, `human:${user.username}`, 120).id;
       } catch { /* computer may be gone */ }
@@ -576,7 +602,7 @@ function matchWildcard(pattern: string, path: string): Record<string, string> | 
   if (aSegs.length <= pSegs.length) return null;
   const params: Record<string, string> = {};
   for (let i = 0; i < pSegs.length; i++) {
-    if (pSegs[i].startsWith(":")) params[pSegs[i].slice(1)] = decodeURIComponent(aSegs[i]);
+    if (pSegs[i].startsWith(":")) { try { params[pSegs[i].slice(1)] = decodeURIComponent(aSegs[i]); } catch { return null; } }
     else if (pSegs[i] !== aSegs[i]) return null;
   }
   params["*"] = aSegs.slice(pSegs.length).join("/");

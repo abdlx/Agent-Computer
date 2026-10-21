@@ -1,3 +1,18 @@
+# Current release blockers ? 2026-10-21
+
+**Not production-ready.** See `PRODUCTION_AUDIT.md` and `RELEASE_CHECKLIST.md`.
+
+- No Linux Docker runtime is available locally; SSH/remote access is prohibited by the user. Current branch Docker, desktop, cgroup, Compose, reboot and Coolify behavior is untested.
+- Legacy containers and socket paths need an offline identity migration. They are intentionally not adopted based on labels. Do not upgrade existing installations blindly.
+- Backup/restore scripts lack the new registry, integrity/path validation and consistent live-profile handling. Interrupted provisioning/deletion recovery remains incomplete.
+- Effective CPU/cgroup quotas, swap telemetry, filesystem quota detection, resizing, measured presets and full resource usage history are unfinished. Host disk probe backing device is operator-selected.
+- Single supervisor/installation only. Supervisor queue is process-local; fixed runtime/network names do not support multiple installations on one daemon.
+- Guest-to-host/private-network isolation, filesystem symlink races, immediate input cancellation and throttling need further hardening.
+- Browser binaries still occupy persisted home cache. Third-party notices and supply-chain audit remain incomplete. npm audit returned HTTP 503.
+- Original Python Docker harnesses hardcode the previous VM paths and need portability work. Historical evidence below does not certify the current branch.
+
+---
+
 # KNOWN_ISSUES
 - Dev VM is an nspawn container in a user namespace: no bridge networking, no cgroup controllers, vfs storage, dockerd cannot pull (Go TLS stalls via egress proxy). Workarounds live in tools/dev-vm/ and do NOT ship in the product; resource limits and bridge networking must be re-validated on a normal host.
 - Guest image on this VM is built by chroot + `docker import` (docker build sandbox not permitted); `docker import` cannot set HEALTHCHECK — the Dockerfile carries it for normal hosts.
