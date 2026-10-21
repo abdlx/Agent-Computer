@@ -17,7 +17,7 @@ services:
     command: ["node", "supervisor/src/server.ts"]
     environment:
       ACP_SUPERVISOR_SOCK: /run/acp/supervisor.sock
-      ACP_SUPERVISOR_SECRET: ${ACP_SUPERVISOR_SECRET:?set ACP_SUPERVISOR_SECRET in .env}
+      ACP_SUPERVISOR_SECRET: ${ACP_SUPERVISOR_SECRET:-}
       ACP_GUEST_IMAGE: ${ACP_GUEST_IMAGE:-agentcomputer/guest:phase0}
       ACP_GUEST_NETWORK: agentcomputer_guests
       ACP_RUNTIME_VOLUME: agentcomputer_acp-run
@@ -30,8 +30,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - acp-run:/run/acp
       - acp-supervisor-data:/data/supervisor
-      # Exact Docker storage filesystem probe; no Docker volume tree access.
-      - ${ACP_DOCKER_STORAGE_PROBE:?set a dedicated directory on the Docker data filesystem}:/docker-storage:ro
+      # Dedicated empty volume on Docker storage filesystem for capacity checks.
+      - acp-storage-probe:/docker-storage:ro
     network_mode: "none"
     depends_on: [egress]
     security_opt: [no-new-privileges:true]
@@ -55,7 +55,7 @@ services:
     command: ["node", "control-plane/src/server.ts"]
     environment:
       ACP_SUPERVISOR_SOCK: /run/acp/supervisor.sock
-      ACP_SUPERVISOR_SECRET: ${ACP_SUPERVISOR_SECRET:?set ACP_SUPERVISOR_SECRET in .env}
+      ACP_SUPERVISOR_SECRET: ${ACP_SUPERVISOR_SECRET:-}
       ACP_PORT: "8787"
       ACP_PUBLIC_ORIGIN: ${ACP_PUBLIC_ORIGIN:-}
       ACP_TRUST_PROXY: ${ACP_TRUST_PROXY:-false}
@@ -85,6 +85,7 @@ volumes:
     name: agentcomputer_acp-run
   acp-supervisor-data:
   acp-data:
+  acp-storage-probe:
 
 networks:
   egress-public:

@@ -10,19 +10,15 @@ Requires a local Linux Docker Engine 24+ with Compose v2, working CPU/memory cgr
 cp .env.example .env
 # Set ACP_SUPERVISOR_SECRET to the output of:
 openssl rand -hex 32
-# Inspect the local daemon's actual data filesystem:
-docker info --format '{{.DockerRootDir}}'
-# Create a new EMPTY probe directory on that same filesystem, for example:
-sudo mkdir -p /var/lib/docker/acp-capacity-probe
-# Set ACP_DOCKER_STORAGE_PROBE in .env to that directory's absolute path.
-# Adjust ACP_HOST_RESERVE_MB, ACP_MAX_RUNNING, ACP_CPU_OVERCOMMIT for the host.
+# Adjust ACP_HOST_RESERVE_MB, ACP_MAX_RUNNING, ACP_CPU_OVERCOMMIT for the host in .env if needed.
+# The compose stack automatically provisions the dedicated acp-storage-probe named volume.
 docker compose config --quiet
 docker compose --profile build build guest-image
 docker compose build supervisor
 docker compose up -d
 ```
 
-The example probe path assumes the Docker data root is `/var/lib/docker`; use the actual filesystem reported by the daemon. Never point the probe at a directory containing application or host data. A wrong-filesystem probe gives wrong disk capacity; automatic backing-device verification remains a release blocker. The probe is read-only and visible only to the supervisor.
+The disk capacity probe uses a dedicated named volume `acp-storage-probe` located on the Docker data root filesystem. It is mounted read-only and visible only to the supervisor. Automatic backing-device verification remains a release blocker.
 
 Open `http://127.0.0.1:8787`, create the owner, and inspect host resource capacity before creating a computer. A computer requires enough uncommitted and currently available memory **after** the host reserve. Requests are refused when Docker controls or host measurements are unavailable. CPU/memory limits cannot be disabled as an environment workaround.
 
