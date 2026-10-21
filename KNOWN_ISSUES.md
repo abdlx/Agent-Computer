@@ -1,0 +1,10 @@
+# KNOWN_ISSUES
+- Dev VM is an nspawn container in a user namespace: no bridge networking, no cgroup controllers, vfs storage, dockerd cannot pull (Go TLS stalls via egress proxy). Workarounds live in tools/dev-vm/ and do NOT ship in the product; resource limits and bridge networking must be re-validated on a normal host.
+- Guest image on this VM is built by chroot + `docker import` (docker build sandbox not permitted); `docker import` cannot set HEALTHCHECK — the Dockerfile carries it for normal hosts.
+- OpenCode free models: DeepSeek V4.1 Flash Free rate-limited (2026-10-21); LongCat 2.5 Preview Free working.
+- Sandbox blocks setns into container namespaces: `docker exec`, `--network container:` joins, and `--network host` all fail with EPERM despite full capabilities. On this VM the guest supervisor is reached via its Unix socket in the home volume; on normal hosts the control plane uses the container network. Product code must not depend on `docker exec`.
+- `docker stats` returns 0 on this VM (no cgroup controllers delegated) — resource measurements must be taken on a normal host.
+- Building the rootfs under the sandbox FS squashes the top directory's mode (2770) and some group ids; the import step must normalize `/` to 755 or non-root users in the guest get EACCES on every exec.
+- Camoufox browser binaries (2.4 GB) live under /home/agent/.cache (the persisted home), so every computer's volume starts with a full copy. Revisit before Phase 5 (candidate: keep the browser cache in the image outside the volume path).
+- Dev VM: explicit NetworkMode "none" breaks container start (dockerd libnetwork prestart hook re-executes the daemon via /proc/<pid>/exe, blocked by the sandbox). Supervisor omits NetworkMode when the configured network is "none" — same effective isolation. Normal hosts unaffected.
+- Dev VM: no delegated cgroup controllers -> CPU/memory limits unenforceable and stats read 0; supervisor reports limitsEnforced=false instead of failing creates. Re-validate limits + stats on a normal Docker host (Phase 7 environment note).

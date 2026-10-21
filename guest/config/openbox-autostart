@@ -1,0 +1,3 @@
+# Openbox autostart (runs inside the session)
+tint2 &
+pcmanfm --desktop &

@@ -1,0 +1,29 @@
+#!/usr/bin/env python3
+# Dev-VM runtime shim: this nspawn sandbox delegates ZERO cgroup controllers,
+# but Docker/containerd always emits linux.resources entries (cpu/io/memory)
+# that crun then tries (and fails) to apply. Strip resource controller blocks
+# from the bundle spec, keep device rules, then exec real crun.
+# On a normal host this shim is unnecessary and must not be used.
+import json, os, sys
+
+args = sys.argv[1:]
+bundle = None
+for i, a in enumerate(args):
+    if a == "--bundle" and i + 1 < len(args):
+        bundle = args[i + 1]
+if bundle is None and os.path.exists("config.json"):
+    bundle = "."
+if bundle and any(a in ("create", "run") for a in args):
+    cfg_path = os.path.join(bundle, "config.json")
+    try:
+        with open(cfg_path) as f:
+            cfg = json.load(f)
+        linux = cfg.get("linux", {})
+        res = linux.get("resources", {})
+        if res:
+            linux["resources"] = {"devices": res.get("devices", [])}
+            with open(cfg_path, "w") as f:
+                json.dump(cfg, f)
+    except Exception as e:
+        print(f"crun-docker shim: spec patch failed: {e}", file=sys.stderr)
+os.execv("/usr/local/bin/crun", ["crun"] + args)

@@ -1,0 +1,114 @@
+{
+  "passed": 18,
+  "total": 18,
+  "results": [
+    {
+      "test": 1,
+      "name": "container boots",
+      "pass": true,
+      "evidence": "health ok 4s after create; display=:0 engine=camoufox"
+    },
+    {
+      "test": 2,
+      "name": "viewer connects (noVNC path)",
+      "pass": true,
+      "evidence": "{\"x\": \"ok\", \"websockify_http\": 200, \"rfb_banner\": \"RFB 003.008\\n\", \"ws_status\": \"HTTP/1.1 101 Switching Protocols\"}"
+    },
+    {
+      "test": 3,
+      "name": "terminal and file manager open",
+      "pass": true,
+      "evidence": "[[\"tint2\", 1280, 30], [\"pcmanfm\", 1280, 800], [\"xterm\", 724, 436], [\"/\", 640, 480]]"
+    },
+    {
+      "test": 4,
+      "name": "browser opens visibly",
+      "pass": true,
+      "evidence": "start={'engine': 'camoufox', 'profile': '/home/agent/.camoufox-profile'}; nav title=Agent Computer Browser Test; big windows=1; screenshot colors=2469"
+    },
+    {
+      "test": 5,
+      "name": "human controls the same browser (visible window)",
+      "pass": true,
+      "evidence": "visually aimed at link (54,269) from 356 blue px; raw click -> {'clicked': 1}; page shows link-clicked: True"
+    },
+    {
+      "test": 6,
+      "name": "agent (API) controls the browser",
+      "pass": true,
+      "evidence": "refs={'Your name': 'e1', 'Submit form': 'e2', 'Click this link': 'e3', 'Set marker': 'e4'}; content shows submitted name: True"
+    },
+    {
+      "test": 7,
+      "name": "agent moves the real cursor smoothly",
+      "pass": true,
+      "evidence": "18 distinct positions sampled, final=(1100, 650), progressive=True"
+    },
+    {
+      "test": 8,
+      "name": "drag-and-drop (window drag)",
+      "pass": true,
+      "evidence": "xterm moved (278, 174) -> (428, 274)"
+    },
+    {
+      "test": 9,
+      "name": "typing and shortcuts",
+      "pass": true,
+      "evidence": "t9.txt='TYPED-LINE\\nAFTER-SHORTCUT'; ctrl+l accepted"
+    },
+    {
+      "test": 10,
+      "name": "browser profile survives stop/start",
+      "pass": true,
+      "evidence": "localStorage marker after restart: True"
+    },
+    {
+      "test": 11,
+      "name": "files survive stop/start",
+      "pass": true,
+      "evidence": "guest-side cat after restart -> 'guest-persistence'"
+    },
+    {
+      "test": 12,
+      "name": "installed tools survive per persistence contract",
+      "pass": true,
+      "evidence": "~/bin/mytool runs after restart -> 'mytool-ok'; container-layer file present after stop/start (rc=0); after recreation: layer file gone (rc=1), home files kept=True"
+    },
+    {
+      "test": 13,
+      "name": "automatic sleep after idle timeout",
+      "pass": true,
+      "evidence": "tick={'action': 'slept', 'detail': 'idle for 10.1s'}; container=Exited (0) Less than a second ago"
+    },
+    {
+      "test": 14,
+      "name": "wake on call",
+      "pass": true,
+      "evidence": "call-health ok=True"
+    },
+    {
+      "test": 15,
+      "name": "concurrent wake is single-flight",
+      "pass": true,
+      "evidence": "8 callers -> ['ready', 'ready', 'ready', 'ready', 'ready', 'ready', 'ready', 'ready']; running containers: 'guest1'; 3296ms"
+    },
+    {
+      "test": 16,
+      "name": "human takeover interrupts agent input",
+      "pass": true,
+      "evidence": "owner during=human, agent click -> human_control, after idle owner=agent, click -> {'clicked': 1}"
+    },
+    {
+      "test": 17,
+      "name": "active jobs block premature sleep",
+      "pass": true,
+      "evidence": "{\"action\": \"blocked\", \"detail\": \"1 active operation(s)\"}"
+    },
+    {
+      "test": 18,
+      "name": "guest cannot reach host Docker socket",
+      "pass": true,
+      "evidence": "in-guest socket check='ABSENT\\n'; privileged/capadd=false []"
+    }
+  ]
+}
