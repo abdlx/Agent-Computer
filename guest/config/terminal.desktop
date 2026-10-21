@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Terminal
+GenericName=Terminal
+Comment=Command Line Terminal
+Exec=xterm -fa "DejaVu Sans Mono" -fs 11
+Icon=utilities-terminal
+Terminal=false
+Categories=System;TerminalEmulator;

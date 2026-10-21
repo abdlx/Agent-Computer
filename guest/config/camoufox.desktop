@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Camoufox Browser
+GenericName=Web Browser
+Comment=Camoufox Stealth Web Browser
+Exec=/usr/local/bin/camoufox-browser %u
+Icon=web-browser
+Terminal=false
+Categories=Network;WebBrowser;

@@ -1,0 +1,66 @@
+# Background 1: Panel
+rounded = 0
+border_width = 0
+border_sides = TBLR
+background_color = #1a1b26 90
+border_color = #000000 30
+
+# Background 2: Default task
+rounded = 4
+border_width = 1
+border_sides = TBLR
+background_color = #24283b 80
+border_color = #414868 60
+
+# Background 3: Active task
+rounded = 4
+border_width = 1
+border_sides = TBLR
+background_color = #3d59a1 90
+border_color = #7aa2f7 80
+
+# Panel
+panel_items = LTSC
+panel_size = 100% 36
+panel_margin = 0 0
+panel_padding = 4 2 4
+panel_background_id = 1
+panel_position = bottom center horizontal
+panel_layer = top
+
+# Taskbar
+taskbar_mode = multi_desktop
+taskbar_padding = 4 0 2
+taskbar_background_id = 0
+task_icon = 1
+task_text = 1
+task_centered = 1
+task_maximum_size = 180 32
+task_padding = 4 2
+task_background_id = 2
+task_active_background_id = 3
+task_font = Sans 9
+task_font_color = #c0caf5 100
+task_active_font_color = #ffffff 100
+
+# Launchers
+launcher_padding = 4 2 4
+launcher_background_id = 0
+launcher_icon_size = 24
+launcher_item_app = /usr/share/applications/camoufox.desktop
+launcher_item_app = /usr/share/applications/terminal.desktop
+launcher_item_app = /usr/share/applications/files.desktop
+
+# System tray
+systray_padding = 4 2 4
+systray_background_id = 0
+systray_icon_size = 20
+
+# Clock
+time1_format = %H:%M
+time2_format = %a %d %b
+clock_font_color = #c0caf5 100
+clock_font = Sans 9
+clock_padding = 6 0
+clock_background_id = 0
+clock_tooltip = %A, %B %d, %Y

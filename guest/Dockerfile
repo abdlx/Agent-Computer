@@ -48,8 +48,12 @@ RUN useradd -m -s /bin/bash -u 1000 agent \
 COPY config/openbox-autostart /home/agent/.config/openbox/autostart
 COPY config/supervisord.conf /etc/supervisor/supervisord.conf
 COPY config/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY config/camoufox-browser /usr/local/bin/camoufox-browser
+COPY config/camoufox.desktop config/terminal.desktop config/files.desktop /usr/share/applications/
+COPY config/tint2rc /etc/xdg/tint2/tint2rc
+COPY config/menu.xml /etc/xdg/openbox/menu.xml
 COPY supervisor/ /opt/guest-supervisor/
-RUN chmod +x /usr/local/bin/entrypoint.sh \
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/camoufox-browser \
     && chown -R agent:agent /home/agent /opt/guest-supervisor
 
 # Internal only: 5901 VNC (Xvnc), 6080 noVNC websockify, 8731 guest supervisor API.

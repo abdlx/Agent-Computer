@@ -17,10 +17,25 @@ if [ -L "$CACHE" ] && [ "$(readlink "$CACHE")" = /opt/browser-runtime/.cache/cam
 fi
 
 # Runtime dirs
-mkdir -p /tmp/.X11-unix /run/user/1000 /home/agent/.vnc
+mkdir -p /tmp/.X11-unix /run/user/1000 /home/agent/.vnc /home/agent/Desktop /home/agent/.config/openbox /home/agent/.config/tint2
 chmod 1777 /tmp/.X11-unix
-chown agent:agent /run/user/1000 /home/agent/.vnc 2>/dev/null || true
+chown agent:agent /run/user/1000 /home/agent/.vnc /home/agent/Desktop /home/agent/.config 2>/dev/null || true
 export XDG_RUNTIME_DIR=/run/user/1000
+
+# Seed desktop shortcuts and panel launchers into persistent home
+for d in camoufox.desktop terminal.desktop files.desktop; do
+  if [ -f "/usr/share/applications/$d" ] && [ ! -f "/home/agent/Desktop/$d" ]; then
+    cp "/usr/share/applications/$d" "/home/agent/Desktop/$d"
+    chmod +x "/home/agent/Desktop/$d"
+  fi
+done
+if [ -f /etc/xdg/tint2/tint2rc ] && [ ! -f /home/agent/.config/tint2/tint2rc ]; then
+  cp /etc/xdg/tint2/tint2rc /home/agent/.config/tint2/tint2rc
+fi
+if [ -f /etc/xdg/openbox/menu.xml ] && [ ! -f /home/agent/.config/openbox/menu.xml ]; then
+  cp /etc/xdg/openbox/menu.xml /home/agent/.config/openbox/menu.xml
+fi
+chown -R agent:agent /home/agent/Desktop /home/agent/.config 2>/dev/null || true
 
 # VNC password: generated once into the persistent home, never printed.
 if [ ! -f /home/agent/.vnc/passwd ]; then
