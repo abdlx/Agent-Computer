@@ -2,6 +2,14 @@ import React, { useEffect, useRef, useState } from "react";
 import RFB from "@novnc/novnc/lib/rfb.js";
 import { api, stateColor } from "./api.js";
 
+function resolveRFB(raw) {
+  let ctor = raw;
+  while (ctor && typeof ctor !== "function" && ctor.default) {
+    ctor = ctor.default;
+  }
+  return ctor;
+}
+
 // The workspace: live desktop via the authenticated noVNC proxy, plus
 // lifecycle controls and live stats. The WebSocket connection itself
 // wakes the computer and holds the owner's presence lease server-side,
@@ -44,7 +52,8 @@ export default function Workspace({ computerId, navigate }) {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     const url = `${proto}//${location.host}/api/computers/${computerId}/vnc`;
     setConnState("connecting");
-    const rfb = new RFB(screenRef.current, url, {});
+    const RFBConstructor = resolveRFB(RFB);
+    const rfb = new RFBConstructor(screenRef.current, url, {});
     rfb.scaleViewport = true;
     rfb.background = "#000";
     rfb.addEventListener("connect", () => setConnState("connected"));
