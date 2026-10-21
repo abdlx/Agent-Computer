@@ -107,8 +107,27 @@ const COMPUTER_ARG = {
   computer: { type: "string", description: "Computer id or name. Optional when the token is bound to one computer or only one exists." },
 };
 const obj = (props: Record<string, unknown>, required: string[] = []): Record<string, unknown> => ({
-  type: "object", properties: props, required,
+  type: "object", properties: props, required, additionalProperties: false,
 });
+
+export function validateToolArguments(schema: Record<string, any>, value: unknown, depth = 0): void {
+  if (depth > 12) throw new Error("arguments are too deeply nested");
+  if (schema.type === "object") {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("arguments must be an object");
+    const input = value as Record<string, unknown>;
+    for (const key of schema.required ?? []) if (!Object.hasOwn(input, key)) throw new Error(`missing argument: ${key}`);
+    for (const [key, item] of Object.entries(input)) {
+      if (!Object.hasOwn(schema.properties ?? {}, key)) {
+        if (schema.additionalProperties === false) throw new Error(`unknown argument: ${key}`);
+      } else validateToolArguments(schema.properties[key], item, depth + 1);
+    }
+  } else if (schema.type === "array") {
+    if (!Array.isArray(value)) throw new Error("argument must be an array");
+    if (schema.items) for (const item of value) validateToolArguments(schema.items, item, depth + 1);
+  } else if (schema.type === "number" || schema.type === "integer") {
+    if (typeof value !== "number" || !Number.isFinite(value) || (schema.type === "integer" && !Number.isInteger(value))) throw new Error("argument must be a finite number");
+  } else if (schema.type && typeof value !== schema.type) throw new Error(`argument must be a ${schema.type}`);
+}
 
 export const TOOLS: ToolDef[] = [
   // ---- lifecycle / discovery -------------------------------------------------
@@ -144,7 +163,7 @@ export const TOOLS: ToolDef[] = [
     inputSchema: obj({ ...COMPUTER_ARG }),
     run: async (ctx, args) => {
       const row = resolveComputer(ctx, args.computer);
-      const c = await ctx.engine.wake(row.id);
+      const c = await ctx.engine.wake(row.id, true);
       return text({ id: row.id, state: c.state });
     },
   },
@@ -400,6 +419,8 @@ export const TOOLS: ToolDef[] = [
         const stepArgs = { ...(step.args ?? {}) };
         if (args.computer && !stepArgs.computer) stepArgs.computer = args.computer;
         try {
+          validateToolArguments(def.inputSchema, stepArgs);
+          if (!ctx.db.tokenActive(ctx.token.id)) throw new Error("token was revoked");
           const r = await def.run(ctx, stepArgs);
           results.push({ tool: def.name, result: r.content, isError: r.isError ?? false });
           if (r.isError && args.stopOnError !== false) break;
@@ -424,9 +445,10 @@ export function makeMcpHandler(deps: { db: Db; engine: LifecycleEngine; sup: Sup
   const rateOk = (tokenId: string): boolean => {
     const t = Date.now();
     const arr = (callLog.get(tokenId) ?? []).filter((x) => t - x < 60000);
+    if (arr.length >= RATE_PER_MIN) return false;
     arr.push(t);
     callLog.set(tokenId, arr);
-    return arr.length <= RATE_PER_MIN;
+    return true;
   };
 
   return async function handleMcp(
@@ -436,7 +458,7 @@ export function makeMcpHandler(deps: { db: Db; engine: LifecycleEngine; sup: Sup
       res.writeHead(status, { "content-type": "application/json", ...headers });
       res.end(JSON.stringify(obj));
     };
-    if (req.method === "GET" || req.method === "DELETE") {
+    if (req.method !== "POST") {
       // No server-initiated stream in this gateway.
       return sendJson(405, { jsonrpc: "2.0", error: { code: -32000, message: "method not allowed" }, id: null });
     }
@@ -469,6 +491,10 @@ export function makeMcpHandler(deps: { db: Db; engine: LifecycleEngine; sup: Sup
       msg = JSON.parse(Buffer.concat(chunks).toString("utf8"));
     } catch {
       return sendJson(400, { jsonrpc: "2.0", error: { code: -32700, message: "parse error" }, id: null });
+    }
+    if (!msg || typeof msg !== "object" || Array.isArray(msg) || msg.jsonrpc !== "2.0" || typeof msg.method !== "string" ||
+        (msg.params !== undefined && (!msg.params || typeof msg.params !== "object" || Array.isArray(msg.params)))) {
+      return sendJson(400, { jsonrpc: "2.0", error: { code: -32600, message: "invalid request" }, id: null });
     }
     const id = (msg.id ?? null) as unknown;
     const method = String(msg.method ?? "");
@@ -513,6 +539,8 @@ export function makeMcpHandler(deps: { db: Db; engine: LifecycleEngine; sup: Sup
           deps.db.audit(`mcp:${token.name}`, `mcp.call.${def.name}`, null,
             { tool: def.name, computer: params.arguments?.computer ?? token.computerId ?? null });
           try {
+            validateToolArguments(def.inputSchema, params.arguments ?? {});
+            if (!deps.db.tokenActive(token.id)) throw new Error("token was revoked");
             const result = await def.run(ctx, params.arguments ?? {});
             return rpcResult(result);
           } catch (e) {

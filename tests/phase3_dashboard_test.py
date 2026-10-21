@@ -18,6 +18,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import phase1_api_test as p1  # noqa: E402
 from phase1_api_test import curl, curl_status, wait_port, REPO  # noqa: E402
 
+from test_environment import configure
+configure()
+
 TMP = "/tmp/acp-test3"
 PORT = 18789
 BASE = f"http://127.0.0.1:{PORT}"

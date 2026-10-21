@@ -32,8 +32,22 @@ services:
       - acp-supervisor-data:/data/supervisor
       # Exact Docker storage filesystem probe; no Docker volume tree access.
       - ${ACP_DOCKER_STORAGE_PROBE:?set a dedicated directory on the Docker data filesystem}:/docker-storage:ro
-    networks: [guests]
+    network_mode: "none"
+    depends_on: [egress]
     security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+
+  egress:
+    build: { context: deploy/egress }
+    image: agentcomputer/egress:0.1.0
+    networks: [egress-public]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/tmp]
+    mem_limit: 128m
+    cpus: 0.5
+    pids_limit: 64
     restart: unless-stopped
 
   control-plane:
@@ -73,6 +87,5 @@ volumes:
   acp-data:
 
 networks:
-  guests:
-    name: agentcomputer_guests
+  egress-public:
     driver: bridge

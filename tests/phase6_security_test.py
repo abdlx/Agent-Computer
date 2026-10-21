@@ -16,6 +16,9 @@ import phase1_api_test as p1  # noqa: E402
 from phase1_api_test import curl, wait_port, REPO  # noqa: E402
 from phase4_hardening_test import curl_raw  # noqa: E402
 
+from test_environment import configure
+configure()
+
 TMP = "/tmp/acp-test6"
 PORT = 18796
 BASE = f"http://127.0.0.1:{PORT}"

@@ -4,6 +4,18 @@ set -u
 export DISPLAY=:0
 export HOME=/home/agent
 
+# Migrate only the exact legacy immutable-cache link created by this project.
+# Browser/fontconfig metadata stays writable; large binaries and addons stay in the image.
+CACHE=/home/agent/.cache/camoufox
+if [ -L "$CACHE" ] && [ "$(readlink "$CACHE")" = /opt/browser-runtime/.cache/camoufox ]; then
+  unlink "$CACHE"
+  mkdir -p "$CACHE"
+  cp -a /opt/browser-runtime/.cache/camoufox/config.json /opt/browser-runtime/.cache/camoufox/repo_cache.json /opt/browser-runtime/.cache/camoufox/.0.5_FLAG "$CACHE/"
+  ln -s /opt/browser-runtime/.cache/camoufox/browsers "$CACHE/browsers"
+  ln -s /opt/browser-runtime/.cache/camoufox/addons "$CACHE/addons"
+  chown -hR agent:agent "$CACHE"
+fi
+
 # Runtime dirs
 mkdir -p /tmp/.X11-unix /run/user/1000 /home/agent/.vnc
 chmod 1777 /tmp/.X11-unix
@@ -19,7 +31,7 @@ if [ ! -f /home/agent/.vnc/passwd ]; then
 fi
 
 # Graceful shutdown: supervisord propagates TERM to children (Xvnc, supervisor, browser owner).
-trap 'supervisorctl -c /etc/supervisor/supervisord.conf shutdown 2>/dev/null; exit 0' TERM INT
+trap 'kill -TERM "$SUP_PID" 2>/dev/null; wait "$SUP_PID"; exit 0' TERM INT
 
 # --nodaemon: supervisord must stay a direct child, or `wait` returns as soon
 # as the daemonizing parent exits and the container stops.

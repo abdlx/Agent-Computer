@@ -75,7 +75,7 @@ const engine = new LifecycleEngine(new SqliteStore(), {
 for (const row of db.computers()) {
   engine.register({
     id: row.id, container: row.container, socketPath: row.socketPath,
-    guestToken: row.guestToken, state: "sleeping",
+    guestToken: row.guestToken, state: row.state === "stopped" ? "stopped" : "sleeping",
   });
 }
 async function reconcile(): Promise<void> {
@@ -92,8 +92,9 @@ async function reconcile(): Promise<void> {
           db.setComputerState(row.id, "unhealthy");
         }
       } else {
-        engine.get(row.id).state = "sleeping";
-        db.setComputerState(row.id, "sleeping");
+        const state = row.state === "stopped" ? "stopped" : "sleeping";
+        engine.get(row.id).state = state;
+        db.setComputerState(row.id, state);
       }
     } catch {
       // container missing entirely (deleted outside the platform)
@@ -338,7 +339,7 @@ for (const action of ["start", "wake", "sleep", "stop"] as const) {
     if (!row) return { status: 404, json: { error: "computer not found" } };
     try {
       if (action === "start" || action === "wake") {
-        await engine.wake(row.id);
+        await engine.wake(row.id, true);
       } else {
         await engine.sleep(row.id, `api-${action}`);
       }
@@ -449,6 +450,7 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(status, { "content-type": "application/json", ...SECURITY_HEADERS, ...headers });
     res.end(JSON.stringify(obj));
   };
+  for (const [header, value] of Object.entries(SECURITY_HEADERS)) res.setHeader(header, value);
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = url.pathname;
   const secureTransport = Boolean((req.socket as { encrypted?: boolean }).encrypted)
@@ -550,7 +552,7 @@ server.on("upgrade", async (req, socket, head) => {
   let leaseId: string | null = null;
   let renew: ReturnType<typeof setInterval> | null = null;
   try {
-    await engine.wake(row.id);
+    await engine.wake(row.id, true);
     syncState(row.id);
     const lease = engine.acquireLease(row.id, `human:${user.username}`, 120);
     leaseId = lease.id;

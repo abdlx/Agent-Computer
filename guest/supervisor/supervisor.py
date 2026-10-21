@@ -40,6 +40,8 @@ from Xlib.ext import xtest
 from PIL import Image
 
 import trajectory
+from confined_fs import ConfinedFS
+from human_input import HumanInputObserver
 
 _browser = None  # BrowserOwner instance, created lazily on first /browser/start
 
@@ -77,47 +79,8 @@ def guest_exec_fs(p, b):
             return {"code": -1, "timeout": True,
                     "stdout": (e.stdout or "")[-20000:] if isinstance(e.stdout, str) else "",
                     "stderr": (e.stderr or "")[-20000:] if isinstance(e.stderr, str) else ""}
-    if p == "/fs/list":
-        path = _safe_home_path(b.get("path", "."))
-        entries = []
-        for name in sorted(os.listdir(path)):
-            fp = os.path.join(path, name)
-            st = os.lstat(fp)
-            entries.append({"name": name, "dir": os.path.isdir(fp), "size": st.st_size})
-        return {"path": path, "entries": entries}
-    if p == "/fs/read":
-        path = _safe_home_path(b["path"])
-        with open(path, "rb") as f:
-            data = f.read(262144)
-        try:
-            return {"path": path, "encoding": "utf-8", "content": data.decode("utf-8")}
-        except UnicodeDecodeError:
-            return {"path": path, "encoding": "base64",
-                    "content": base64.b64encode(data).decode()}
-    if p == "/fs/write":
-        path = _safe_home_path(b["path"])
-        data = (base64.b64decode(str(b.get("content", "")))
-                if b.get("encoding") == "base64"
-                else str(b.get("content", "")).encode())
-        if len(data) > 5_000_000:
-            raise ValueError("file too large (5 MB max per write)")
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "wb") as f:
-            f.write(data)
-        return {"path": path, "bytes": len(data)}
-    if p == "/fs/mkdir":
-        path = _safe_home_path(b["path"])
-        os.makedirs(path, exist_ok=True)
-        return {"path": path}
-    if p == "/fs/delete":
-        path = _safe_home_path(b["path"])
-        if path == HOME_DIR:
-            raise ValueError("refusing to delete the home directory")
-        if os.path.isdir(path) and not os.path.islink(path):
-            shutil.rmtree(path)
-        else:
-            os.unlink(path)
-        return {"deleted": path}
+    if p.startswith("/fs/"):
+        return ConfinedFS(HOME_DIR).call(p[4:], b)
     raise ValueError(f"unknown exec/fs path: {p}")
 
 
@@ -167,6 +130,22 @@ def mark_issued(x, y):
     agent_motion.update(x=x, y=y, until=now() + 0.6)
 
 
+def human_takeover():
+    with state_lock:
+        activity["last_human"] = now()
+        activity["last_any"] = now()
+        control.update(owner="human", since=now(), reason="viewer-input")
+    release_all()
+    if _browser is not None:
+        _browser.cancel_input()
+
+
+def guard_continuing_input():
+    with state_lock:
+        if control["owner"] == "human":
+            raise InterruptedError("human_control")
+
+
 def human_watch():
     """Detect human pointer motion: pointer moved while no agent move is in flight."""
     last_x, last_y = pointer_pos()
@@ -188,6 +167,8 @@ def human_watch():
                     activity["last_any"] = now()
                     if control["owner"] != "human":
                         control.update(owner="human", since=now(), reason="pointer-activity")
+            if not agent_active:
+                release_all()
             last_x, last_y = x, y
 
 
@@ -241,6 +222,7 @@ def move_to(x, y, mode="natural", duration_ms=None):
         delay = ts / 1000.0 - (time.perf_counter() - t0)
         if delay > 0:
             time.sleep(delay)
+        guard_continuing_input()
         warp(px, py)
     dpy.sync()
     counters["moves"] += 1
@@ -333,15 +315,31 @@ def _char_keysym(ch):
 
 
 def _xdotool_type(text):
-    subprocess.run(["xdotool", "type", "--clearmodifiers", "--", text],
-                   check=True, timeout=30,
-                   env={**os.environ, "DISPLAY": DISPLAY_NAME})
+    proc = subprocess.Popen(["xdotool", "type", "--clearmodifiers", "--", text],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            env={**os.environ, "DISPLAY": DISPLAY_NAME})
+    deadline = time.monotonic() + 30
+    try:
+        while proc.poll() is None:
+            guard_continuing_input()
+            if time.monotonic() > deadline:
+                raise TimeoutError("typing timed out")
+            time.sleep(0.01)
+        if proc.returncode:
+            raise ValueError("typing failed")
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+        release_all()
+
 
 
 def type_text(text):
     if all(32 <= ord(c) < 127 or c in "\n\t" for c in text) and len(text) <= 200:
         try:
             for ch in text:
+                guard_continuing_input()
                 ks_name, shift = _char_keysym(ch)
                 kc = keycode_for(ks_name) if ks_name else None
                 if kc is None:
@@ -407,7 +405,9 @@ def list_windows():
         try:
             w = dpy.create_resource_object("window", wid)
             g = w.get_geometry()
-            name = w.get_wm_name() or ""
+            title = w.get_full_property(dpy.intern_atom("_NET_WM_NAME"), dpy.intern_atom("UTF8_STRING"))
+            name = title.value.decode("utf-8", errors="replace") if title is not None else (w.get_wm_name() or "")
+            wm_class = list(w.get_wm_class() or ())
             # get_geometry() is PARENT-relative: for a decorated window
             # that is client-in-frame (e.g. 1,20), not the position on
             # screen. Report root coordinates so callers can aim input
@@ -415,7 +415,7 @@ def list_windows():
             rx, ry = window_root_pos(w)
             wins.append({"id": wid, "title": name, "x": rx, "y": ry,
                          "width": g.width, "height": g.height,
-                         "active": wid == active_id})
+                         "active": wid == active_id, "wmClass": wm_class})
         except Exception:
             continue
     return wins
@@ -513,12 +513,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, get_browser().snapshot())
             else:
                 self._send(404, {"error": "not found"})
+        except InterruptedError:
+            self._send(409, {"error": "human_control"})
         except FileNotFoundError as e:
             self._send(404, {"error": str(e)})
         except ValueError as e:
             self._send(400, {"error": str(e)})
         except Exception as e:
-            self._send(500, {"error": str(e)})
+            self._send(409 if "human_control" in str(e) else 500, {"error": str(e)})
 
     def _vnc_bridge(self):
         """Bridge this (authenticated) connection to in-guest websockify.
@@ -570,12 +572,16 @@ class Handler(BaseHTTPRequestHandler):
         if rest:
             self.connection.sendall(rest)
 
-        def pump(src, dst):
+        observer = HumanInputObserver(human_takeover)
+
+        def pump(src, dst, observe=False):
             try:
                 while True:
                     data = src.recv(65536)
                     if not data:
                         break
+                    if observe:
+                        observer.feed(data)
                     dst.sendall(data)
             except Exception:
                 pass
@@ -584,7 +590,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
-        t = threading.Thread(target=pump, args=(self.connection, upstream), daemon=True)
+        t = threading.Thread(target=pump, args=(self.connection, upstream, True), daemon=True)
         t.start()
         pump(upstream, self.connection)
         try:
@@ -681,6 +687,7 @@ class Handler(BaseHTTPRequestHandler):
                         delay = ts / 1000.0 - (time.perf_counter() - t0)
                         if delay > 0:
                             time.sleep(delay)
+                        guard_continuing_input()
                         warp(px, py)
                     dpy.sync()
                 finally:
@@ -701,12 +708,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"scrolled": [dx, dy]})
             else:
                 self._send(404, {"error": "not found"})
+        except InterruptedError:
+            self._send(409, {"error": "human_control"})
         except FileNotFoundError as e:
             self._send(404, {"error": str(e)})
         except ValueError as e:
             self._send(400, {"error": str(e)})
         except Exception as e:
-            self._send(500, {"error": str(e)})
+            self._send(409 if "human_control" in str(e) else 500, {"error": str(e)})
 
 
 def browser_engine():

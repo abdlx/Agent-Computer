@@ -45,6 +45,11 @@ test("real control-plane HTTP onboarding, sessions, origins and token revocation
     assert.equal(minted.status, 201);
     const token = await minted.json();
     const agent = { authorization: `Bearer ${token.token}` };
+    assert.equal((await request("/mcp", "POST", null, agent)).status, 400);
+    assert.equal((await request("/mcp", "POST", [], agent)).status, 400);
+    assert.equal((await request("/mcp", "POST", { jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "computer_list", arguments: { hostMount: "/" } } }, agent)).status, 200);
+    const invalidTool = await request("/mcp", "POST", { jsonrpc: "2.0", id: 8, method: "tools/call", params: { name: "computer_list", arguments: { hostMount: "/" } } }, agent);
+    assert.equal((await invalidTool.json()).result.isError, true);
     assert.equal((await request("/mcp", "POST", { jsonrpc: "2.0", id: 1, method: "tools/list" }, agent)).status, 200);
     assert.equal((await request(`/api/tokens/${token.id}`, "DELETE", {}, auth)).status, 200);
     assert.equal((await request("/mcp", "POST", { jsonrpc: "2.0", id: 2, method: "tools/list" }, agent)).status, 401);

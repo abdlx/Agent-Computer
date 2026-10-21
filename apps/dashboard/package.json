@@ -1,1 +1,1 @@
-{"dependencies":{"@novnc/novnc":"1.5.0","react":"18.3.1","react-dom":"18.3.1"},"devDependencies":{"@vitejs/plugin-react":"4.3.4","vite":"5.4.11"},"name":"acp-dashboard","private":true,"scripts":{"build":"vite build","dev":"vite"},"type":"module","version":"0.1.0"}
+{"dependencies":{"@novnc/novnc":"1.5.0","react":"18.3.1","react-dom":"18.3.1"},"devDependencies":{"@vitejs/plugin-react":"6.1.2","vite":"8.3.5"},"name":"acp-dashboard","private":true,"scripts":{"build":"vite build","dev":"vite"},"type":"module","version":"0.1.0"}

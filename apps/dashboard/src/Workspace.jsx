@@ -13,6 +13,7 @@ export default function Workspace({ computerId, navigate }) {
   const [error, setError] = useState("");
   const screenRef = useRef(null);
   const rfbRef = useRef(null);
+  const wakeOnOpenRef = useRef(true);
 
   const load = async () => {
     try {
@@ -55,9 +56,11 @@ export default function Workspace({ computerId, navigate }) {
   };
 
   useEffect(() => {
-    if (computer && computer.state !== "sleeping") connect();
-    if (computer && computer.state === "sleeping") {
-      api("POST", `/api/computers/${computerId}/wake`, {}).then(load).catch(() => {});
+    if (!computer) return;
+    if (!["sleeping", "stopped"].includes(computer.state)) { wakeOnOpenRef.current = false; connect(); }
+    else if (wakeOnOpenRef.current) {
+      wakeOnOpenRef.current = false;
+      api("POST", `/api/computers/${computerId}/wake`, {}).then(load).catch((e) => setError(e.message));
     }
   }, [computer?.state]);
 
@@ -87,7 +90,7 @@ export default function Workspace({ computerId, navigate }) {
             live: CPU {stats.stats.cpuPercent}% · RAM {stats.stats.memoryUsageMb}/{stats.stats.memoryLimitMb || "∞"} MB · net ↓{stats.stats.networkRxMb} MB ↑{stats.stats.networkTxMb} MB
           </span>
         )}
-        {computer.state === "sleeping"
+        {["sleeping", "stopped"].includes(computer.state)
           ? <button className="btn primary" onClick={() => act("wake")}>Wake</button>
           : <button className="btn" onClick={() => act("sleep")}>Sleep</button>}
         <button className="btn" onClick={() => screenRef.current?.requestFullscreen?.()}>Fullscreen</button>
@@ -96,7 +99,7 @@ export default function Workspace({ computerId, navigate }) {
       <div className="screen-wrap">
         {connState !== "connected" && (
           <div className="screen-overlay">
-            {computer.state === "sleeping" || connState === "connecting"
+            {["sleeping", "stopped"].includes(computer.state) || connState === "connecting"
               ? "Waking the computer and connecting to its desktop…"
               : connState === "failed"
                 ? "Desktop connection dropped."

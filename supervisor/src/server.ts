@@ -27,6 +27,7 @@ import * as http from "node:http";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { createGuestNetwork } from "./network.ts";
 import { admission, validateLimits } from "./resources.ts";
 
 const SOCK = process.env.ACP_SUPERVISOR_SOCK ?? "/run/acp/supervisor.sock";
@@ -41,9 +42,9 @@ if (!SECRET) {
 }
 
 const RUNTIME_VOLUME = process.env.ACP_RUNTIME_VOLUME ?? "agentcomputer_acp-run";
-const RUNTIME_DIR = path.dirname(SOCK);
+const RUNTIME_DIR = process.env.ACP_RUNTIME_DIR ?? path.dirname(SOCK);
 const REGISTRY_FILE = process.env.ACP_REGISTRY_FILE ?? "/data/supervisor/registry.json";
-type Identity = { containerId: string; volume: string; mountpoint: string };
+type Identity = { containerId: string; volume: string; mountpoint: string; networkId?: string; proxyId?: string; deleting?: boolean; deleteVolume?: boolean };
 let identities: Record<string, Identity> = {};
 try {
   identities = JSON.parse(fs.readFileSync(REGISTRY_FILE, "utf8"));
@@ -157,10 +158,12 @@ async function createComputer(body: Record<string, unknown>) {
   const mountpoint = (volInfo.data as { Mountpoint: string }).Mountpoint;
 
   // Fail closed: network isolation must never depend on a daemon default.
-  const useNetwork = NETWORK !== "none";
+  const isolated = NETWORK !== "none" ? await createGuestNetwork(id, dockerCall, process.env.ACP_EGRESS_CONTAINER ?? "agentcomputer-egress-1") : null;
+  const guestNetwork = isolated?.name ?? "none";
+  const useNetwork = isolated !== null;
   const payload = {
     Image: GUEST_IMAGE,
-    Env: [`GUEST_TOKEN=${guestToken}`, "GUEST_SUPERVISOR_SOCK=/run/acp-guest/api.sock"],
+    Env: [`GUEST_TOKEN=${guestToken}`, "GUEST_SUPERVISOR_SOCK=/run/acp-guest/api.sock", ...(useNetwork ? ["HTTP_PROXY=http://acp-egress:3128", "HTTPS_PROXY=http://acp-egress:3128", "http_proxy=http://acp-egress:3128", "https_proxy=http://acp-egress:3128", "NO_PROXY=localhost,127.0.0.1", "no_proxy=localhost,127.0.0.1", "ACP_BROWSER_PROXY=http://acp-egress:3128"] : [])],
     Labels: {
       "acp.managed": "true",
       "acp.computer": id,
@@ -170,7 +173,7 @@ async function createComputer(body: Record<string, unknown>) {
       Binds: [`${volumeName(id)}:/home/agent`, `${guestRuntime}:/run/acp-guest`],
       NanoCpus: Math.round(cpuMillis * 1_000_000),
       Memory: Math.round(memoryMb * 1024 * 1024),
-      NetworkMode: NETWORK,
+      NetworkMode: guestNetwork,
       MemorySwap: Math.round(memoryMb * 1024 * 1024),
       PidsLimit: 512,
       Privileged: false,
@@ -185,7 +188,7 @@ async function createComputer(body: Record<string, unknown>) {
       AutoRemove: false,
     },
     NetworkingConfig: useNetwork ? {
-      EndpointsConfig: { [NETWORK]: {} },
+      EndpointsConfig: { [guestNetwork]: {} },
     } : undefined,
   };
   const created = await dockerCall<{ Id: string }>(
@@ -193,7 +196,7 @@ async function createComputer(body: Record<string, unknown>) {
   if (created.status !== 201 || !created.data.Id) {
     throw Object.assign(new Error(`container creation rejected: ${created.status}; resource enforcement is required`), { code: 502 });
   }
-  identities[id] = { containerId: created.data.Id, volume: volumeName(id), mountpoint };
+  identities[id] = { containerId: created.data.Id, volume: volumeName(id), mountpoint, networkId: isolated?.id, proxyId: isolated?.proxyId };
   saveIdentities();
   const limitsEnforced = true;
   return {
@@ -244,7 +247,9 @@ async function resources(requested = { memoryMb: 256, cpuMillis: 250 }) {
   const st = fs.statfsSync(process.env.ACP_STORAGE_PROBE ?? "/docker-storage");
   const running: { memoryMb: number; cpuMillis: number }[] = [];
   for (const id of Object.keys(identities)) {
-    const d = await inspectManaged(id);
+    let d: InspectData;
+    try { d = await inspectManaged(id); }
+    catch (error) { if ((error as { code?: number }).code === 404) continue; throw error; }
     if (d.State.Running) {
       const hc = d.HostConfig as unknown as { Memory: number; NanoCpus: number };
       if (!(hc.Memory > 0) || !(hc.NanoCpus > 0)) throw Object.assign(new Error("running computer lacks enforced limits"), { code: 503 });
@@ -284,20 +289,35 @@ const routes: Record<string, (body: Record<string, unknown>) => Promise<unknown>
   },
   "/remove": async (b) => {
     const id = String(b.computerId ?? "");
-    const managed = await inspectManaged(id);
-    // Validate storage before removing the container so a failed check is recoverable.
-    if (b.removeVolume === true) {
+    const identity = Object.hasOwn(identities, id) ? identities[id] : undefined;
+    if (!identity) throw Object.assign(new Error("computer is not registered"), { code: 403 });
+    try { await inspectManaged(id); }
+    catch (error) { if (!(identity.deleting && (error as { code?: number }).code === 404)) throw error; }
+    const removeVolume = identity.deleting ? identity.deleteVolume === true : b.removeVolume === true;
+    if (removeVolume) {
       const volume = await dockerCall<{ Mountpoint: string; Labels: Record<string, string> }>("GET", `/volumes/${volumeName(id)}`);
-      if (volume.status !== 200 || volume.data.Mountpoint !== identities[id].mountpoint ||
-          volume.data.Labels?.["acp.computer"] !== id || volume.data.Labels?.["acp.managed"] !== "true") {
+      if (!(volume.status === 404 && identity.deleting) &&
+          (volume.status !== 200 || volume.data.Mountpoint !== identity.mountpoint ||
+          volume.data.Labels?.["acp.computer"] !== id || volume.data.Labels?.["acp.managed"] !== "true")) {
         throw Object.assign(new Error("volume identity mismatch; refusing deletion"), { code: 403 });
       }
     }
-    const r = await dockerCall("DELETE", `/containers/${managed.Id}?force=true`);
+    identity.deleting = true;
+    identity.deleteVolume = removeVolume;
+    saveIdentities();
+    const r = await dockerCall("DELETE", `/containers/${identity.containerId}?force=true`);
     if (r.status !== 204 && r.status !== 404) throw Object.assign(new Error(`remove failed: ${r.status}`), { code: 502 });
-    if (b.removeVolume === true) {
+    if (removeVolume) {
       const v = await dockerCall("DELETE", `/volumes/${volumeName(id)}`);
       if (v.status !== 204 && v.status !== 404) throw Object.assign(new Error(`volume remove failed: ${v.status}`), { code: 502 });
+    }
+    if (identity.networkId) {
+      if (identity.proxyId) {
+        const disconnected = await dockerCall("POST", `/networks/${identity.networkId}/disconnect`, { Container: identity.proxyId, Force: true });
+        if (![200, 404].includes(disconnected.status)) throw Object.assign(new Error("network disconnect failed"), { code: 502 });
+      }
+      const removedNetwork = await dockerCall("DELETE", `/networks/${identity.networkId}`);
+      if (![204, 404].includes(removedNetwork.status)) throw Object.assign(new Error("network cleanup failed"), { code: 502 });
     }
     delete identities[id];
     saveIdentities();

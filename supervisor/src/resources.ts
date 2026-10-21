@@ -32,7 +32,7 @@ export function admission(capacity: Capacity, running: Reservation[], requested:
   if (running.length >= policy.maxRunning) reason = "maximum running computer count reached";
   else if (requested.memoryMb > memoryHeadroomMb) reason = "insufficient memory after host reserve and existing commitments";
   else if (requested.cpuMillis + cpuCommittedMillis > capacity.cpuMillis * policy.cpuOvercommit) reason = "CPU commitment limit reached";
-  else if (capacity.freeDiskGb < policy.minFreeDiskGb) reason = "insufficient Docker storage space";
+  else if (capacity.freeDiskGb < policy.minFreeDiskGb) reason = "insufficient free disk on Docker storage";
   return { allowed: !reason, reason, memoryHeadroomMb, memoryCommittedMb, cpuCommittedMillis,
     runningCount: running.length, policy, capacity, storageQuotaSupported: false };
 }

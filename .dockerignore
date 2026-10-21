@@ -1,0 +1,11 @@
+.git
+.env
+.env.*
+!.env.example
+.build
+backups
+**/node_modules
+**/__pycache__
+**/*.pyc
+**/dist
+tests/evidence

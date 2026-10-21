@@ -1,5 +1,5 @@
 /**
- * Phase 2 validation client — uses the OFFICIAL MCP TypeScript SDK
+ * Phase 2 validation client â€” uses the OFFICIAL MCP TypeScript SDK
  * (Streamable HTTP transport) against the ACP gateway, the same way a
  * real agent (Hermes etc.) would connect.
  *
@@ -115,7 +115,8 @@ async function main() {
   r = await call("windows_list");
   let wins;
   try { wins = JSON.parse(textOf(r)).windows; } catch { wins = []; }
-  const xterm = wins.find((w) => w.title === "xterm");
+  const xterm = wins.find((w) => w.wmClass?.some((c) => c.toLowerCase() === "xterm"))
+    ?? wins.find((w) => w.title === "xterm");
   out("windows_list_xterm", !!xterm, { id: xterm?.id });
   r = await call("batch", {
     steps: [

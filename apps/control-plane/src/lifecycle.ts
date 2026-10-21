@@ -31,7 +31,7 @@ const run = promisify(execFile);
 
 export type ComputerState =
   | "creating" | "starting" | "ready" | "idle" | "stopping"
-  | "sleeping" | "waking" | "failed" | "unhealthy" | "deleting" | "deleted";
+  | "sleeping" | "stopped" | "waking" | "failed" | "unhealthy" | "deleting" | "deleted";
 
 export interface Computer {
   id: string;
@@ -282,6 +282,7 @@ export class LifecycleEngine {
     }
     if (pruned) this.persist();
 
+    if (c.state === "stopped") return { action: "none", detail: "manually stopped" };
     if (c.state === "sleeping") return { action: "none", detail: "already sleeping" };
     if (!(await this.containerRunning(c.container))) {
       c.state = "sleeping"; this.persist();
@@ -345,7 +346,11 @@ export class LifecycleEngine {
     const c = this.get(computerId);
     if (c.state === "deleting" || c.state === "deleted") throw new Error("computer is being deleted");
     if (this.activeOperations(computerId).length) throw new Error("computer has active operations; retry after they finish");
-    if (c.state === "sleeping") return c;
+    if (c.state === "stopped") return c;
+    if (c.state === "sleeping") {
+      if (reason === "api-stop") { c.state = "stopped"; this.persist(); }
+      return c;
+    }
     c.state = "stopping"; this.persist();
     try {
       // Best effort: close the browser so cookies/session flush to the
@@ -353,7 +358,7 @@ export class LifecycleEngine {
       // SIGTERM; doing it explicitly orders it before the stop begins.
       await guestCall(c.socketPath, "POST", "/browser/close", {}, 15000, c.guestToken).catch(() => undefined);
       await this.driver.stop(c.container, this.opts.stopGraceS);
-      c.state = "sleeping";
+      c.state = reason === "api-stop" ? "stopped" : "sleeping";
     } catch (e) {
       c.state = "failed";
       this.persist();
@@ -364,13 +369,14 @@ export class LifecycleEngine {
   }
 
   /** Single-flight wake: concurrent callers share one start + health-wait. */
-  wake(computerId: string): Promise<Computer> {
+  wake(computerId: string, explicit = false): Promise<Computer> {
+    if (this.get(computerId).state === "stopped" && !explicit) return Promise.reject(new Error("computer was manually stopped; explicitly start it first"));
     const existing = this.wakeFlights.get(computerId);
     if (existing) return existing;
     const flight = (async () => {
       let result!: Computer;
       await this.enqueueTransition(computerId, async () => {
-        result = await this.doWake(computerId);
+        result = await this.doWake(computerId, explicit);
       });
       return result;
     })().finally(() => {
@@ -380,8 +386,9 @@ export class LifecycleEngine {
     return flight;
   }
 
-  private async doWake(computerId: string): Promise<Computer> {
+  private async doWake(computerId: string, explicit = false): Promise<Computer> {
     const c = this.get(computerId);
+    if (c.state === "stopped" && !explicit) throw new Error("computer was manually stopped; explicitly start it first");
     if (c.state === "deleting" || c.state === "deleted") {
       throw new Error("computer is being deleted");
     }

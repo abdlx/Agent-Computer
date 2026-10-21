@@ -54,3 +54,12 @@ test("computer-bound admin token cannot create another computer", async () => {
   await assert.rejects(tool.run({ token: { computerId: "box", scopes: ["admin"] }, sup: { create: async () => { called = true; } } }, { name: "escape" }), /bound tokens/);
   assert.equal(called, false);
 });
+
+test("manual stop rejects automatic wake and idle evaluation preserves it", async () => {
+  const engine = makeEngine();
+  engine.get("box").state = "stopped";
+  await assert.rejects(engine.wake("box"), /manually stopped/);
+  await assert.rejects(engine.call("box", async () => "must not run"), /manually stopped/);
+  assert.deepEqual(engine.activeOperations("box"), []);
+  assert.equal((await engine.tick("box")).detail, "manually stopped");
+});

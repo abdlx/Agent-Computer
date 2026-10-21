@@ -31,14 +31,17 @@ import phase1_api_test as p1  # noqa: E402
 from phase1_api_test import curl, curl_status, wait_port, REPO  # noqa: E402
 from phase4_hardening_test import curl_raw  # noqa: E402
 
-TMP = os.path.expanduser("~/workspace/agent-computer/.build/e2e-tmp")
+from test_environment import configure
+configure()
+
+TMP = os.path.join(REPO, ".build", "e2e-tmp")
 PORT = 18797
 BASE = f"http://127.0.0.1:{PORT}"
 SOCK = f"{TMP}/supervisor.sock"
 SECRET = "e2e-secret"
 JAR = f"{TMP}/cookies.txt"
 p1.JAR = JAR
-VOLROOT = "/home/hatch/docker-data/volumes"
+VOLROOT = subprocess.check_output(["docker", "info", "--format", "{{.DockerRootDir}}"], text=True).strip() + "/volumes"
 STEP = [0]
 RESULTS = []
 

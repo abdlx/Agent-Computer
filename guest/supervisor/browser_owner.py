@@ -22,6 +22,7 @@ Graceful close: close() shuts the context down cleanly so profile state
 (cookies, local storage, session restore) is flushed before container stop.
 """
 import asyncio
+import concurrent.futures
 import os
 import re
 import threading
@@ -45,6 +46,8 @@ class BrowserOwner:
         self._page = None
         self.engine = None
         self._refs = {}           # ref -> (role, name)
+        self._pending = set()
+        self._pending_lock = threading.Lock()
         self._started = threading.Event()
         self._start_error = None
         self._shutdown = None     # asyncio.Event, created on the owner loop
@@ -83,12 +86,15 @@ class BrowserOwner:
                 from camoufox.async_api import AsyncCamoufox
                 self._cfx = AsyncCamoufox(
                     persistent_context=True, user_data_dir=profile,
-                    headless=False)
+                    headless=False,
+                    **({"proxy": {"server": os.environ["ACP_BROWSER_PROXY"], "bypass": "localhost,127.0.0.1"}} if os.environ.get("ACP_BROWSER_PROXY") else {}))
                 self._ctx = await self._cfx.__aenter__()
             else:
                 self._pw = await async_playwright().start()
                 self._ctx = await self._pw.chromium.launch_persistent_context(
                     profile, headless=False,
+                    executable_path="/usr/bin/chromium",
+                    **({"proxy": {"server": os.environ["ACP_BROWSER_PROXY"], "bypass": "localhost,127.0.0.1"}} if os.environ.get("ACP_BROWSER_PROXY") else {}),
                     args=["--no-first-run", "--disable-dev-shm-usage"])
             self._page = (self._ctx.pages[0] if self._ctx.pages
                           else await self._ctx.new_page())
@@ -113,11 +119,23 @@ class BrowserOwner:
         if not self._thread or not self._thread.is_alive() or not self._loop:
             raise RuntimeError("browser not running")
         fut = asyncio.run_coroutine_threadsafe(coro_fn(*args), self._loop)
+        with self._pending_lock:
+            self._pending.add(fut)
         try:
             return fut.result(timeout=timeout)
         except TimeoutError:
             fut.cancel()
             raise TimeoutError("browser call timed out")
+        except concurrent.futures.CancelledError as error:
+            raise InterruptedError("human_control") from error
+        finally:
+            with self._pending_lock:
+                self._pending.discard(fut)
+
+    def cancel_input(self):
+        with self._pending_lock:
+            for future in list(self._pending):
+                future.cancel()
 
     def close(self):
         if self._thread and self._thread.is_alive() and self._loop:

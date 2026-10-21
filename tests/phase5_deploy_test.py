@@ -24,9 +24,13 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from phase1_api_test import curl  # noqa: E402
 
-VOLROOT = "/home/hatch/docker-data/volumes"
+from test_environment import configure
+configure()
+
+VOLROOT = subprocess.check_output(["docker", "info", "--format", "{{.DockerRootDir}}"], text=True).strip() + "/volumes"
 RUN_VOL = "acp5-run"
 DATA_VOL = "acp5-data"
+SUP_DATA_VOL = "acp5-supervisor-data"
 SECRET = "deploy-test-secret"
 SUP_SOCK = f"{VOLROOT}/{RUN_VOL}/_data/supervisor.sock"
 PORT = 18795
@@ -64,7 +68,7 @@ def sup_call(route, body):
 
 
 def main():
-    for v in (RUN_VOL, DATA_VOL):
+    for v in (RUN_VOL, DATA_VOL, SUP_DATA_VOL):
         docker("volume", "create", v)
     docker("rm", "-f", "acp5-sup", check=False)
     docker("rm", "-f", "acp5-cp", check=False)
@@ -74,9 +78,12 @@ def main():
                "-e", f"ACP_SUPERVISOR_SECRET={SECRET}",
                "-e", "ACP_GUEST_NETWORK=none",
                "-e", "ACP_MIN_FREE_DISK_GB=1",
+               "-e", f"ACP_RUNTIME_VOLUME={RUN_VOL}",
+               "-e", "ACP_STORAGE_PROBE=/docker-storage",
                "-v", "/run/docker.sock:/var/run/docker.sock",
                "-v", f"{RUN_VOL}:/run/acp",
-               "-v", f"{VOLROOT}:{VOLROOT}:ro",
+               "-v", f"{SUP_DATA_VOL}:/data/supervisor",
+               "-v", f"{VOLROOT.rsplit('/', 1)[0]}/acp-capacity-probe:/docker-storage:ro",
                "agentcomputer/platform:0.1.0", "node", "supervisor/src/server.ts")
         deadline = time.time() + 30
         while not os.path.exists(SUP_SOCK) and time.time() < deadline:
@@ -98,7 +105,7 @@ def main():
         record("guest inspect shows it running",
                st == 200 and insp.get("running") is True, insp.get("status"))
         # the guest's own supervisor answers through the volume socket
-        gsock = created.get("socketPath")
+        gsock = created.get("socketPath", "").replace("/run/acp/", f"{VOLROOT}/{RUN_VOL}/_data/", 1)
         ok = False
         deadline = time.time() + 60
         while time.time() < deadline:
@@ -113,7 +120,7 @@ def main():
         record("guest supervisor healthy (full containerized path)", ok, gsock)
         st, _ = sup_call("/stop", {"computerId": guest_id})
         record("guest stops", st == 200, st)
-        st, _ = sup_call("/remove", {"computerId": guest_id})
+        st, _ = sup_call("/remove", {"computerId": guest_id, "removeVolume": True})
         record("guest removed", st == 200, st)
         guest_id = None
 
@@ -121,10 +128,9 @@ def main():
         docker("run", "-d", "--name", "acp5-cp",
                "-e", f"ACP_SUPERVISOR_SECRET={SECRET}",
                "-e", "ACP_IDLE_TIMEOUT_S=3600",
-               "-p", f"{PORT}:8787",
-               "-v", f"{RUN_VOL}:/run/acp",
+               "-p", f"127.0.0.1:{PORT}:8787",
+               "-v", f"{RUN_VOL}:/run/acp:ro",
                "-v", f"{DATA_VOL}:/data",
-               "-v", f"{VOLROOT}:{VOLROOT}",
                "agentcomputer/platform:0.1.0", "node", "control-plane/src/server.ts")
         time.sleep(3)
         logs = docker("logs", "acp5-cp")
@@ -133,7 +139,7 @@ def main():
         import sqlite3
         dbfile = f"{VOLROOT}/{DATA_VOL}/_data/control-plane.db"
         v = sqlite3.connect(dbfile).execute("SELECT v FROM schema_version").fetchone()[0]
-        record("control plane initialized a v2 database in its data volume", v == 2, v)
+        record("control plane initialized a v3 database in its data volume", v == 3, v)
 
         reachable = False
         try:
@@ -153,17 +159,15 @@ def main():
                           "API behavior is covered by Phases 1–4 against the same code")
     finally:
         if guest_id:
-            sup_call("/remove", {"computerId": guest_id})
+            sup_call("/remove", {"computerId": guest_id, "removeVolume": True})
         docker("rm", "-f", "acp5-sup", check=False)
         docker("rm", "-f", "acp5-cp", check=False)
         docker("volume", "rm", "-f", RUN_VOL, check=False)
         docker("volume", "rm", "-f", DATA_VOL, check=False)
+        docker("volume", "rm", "-f", SUP_DATA_VOL, check=False)
     passed = sum(1 for _, ok in RESULTS if ok)
     print(f"\nPHASE 5 DEPLOYMENT TESTS: {passed}/{len(RESULTS)} passed")
-    # The TCP leg is environment-blocked in this sandbox, not a product
-    # failure; count the run as passed when everything else passed.
-    hard = [n for n, ok in RESULTS if not ok and "published port" not in n]
-    return 0 if not hard else 1
+    return 0 if passed == len(RESULTS) else 1
 
 
 if __name__ == "__main__":

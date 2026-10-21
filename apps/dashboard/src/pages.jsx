@@ -55,7 +55,7 @@ export function Computers({ navigate }) {
             </p>
             <div className="card-actions">
               <button className="btn primary" onClick={() => navigate(`#/workspace/${c.id}`)}>Open</button>
-              {c.state === "sleeping"
+              {["sleeping", "stopped"].includes(c.state)
                 ? <button className="btn" onClick={() => act(c.id, "wake")}>Wake</button>
                 : <button className="btn" onClick={() => act(c.id, "sleep")}>Sleep</button>}
               <button className="btn danger" onClick={() => setDeleting(c)}>Delete</button>

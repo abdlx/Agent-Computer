@@ -12,7 +12,10 @@ import subprocess
 import sys
 import time
 
-REPO = "/home/hatch/workspace/agent-computer"
+from test_environment import configure
+configure()
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TMP = "/tmp/acp-test"
 PORT = 18787
 BASE = f"http://127.0.0.1:{PORT}"
@@ -150,7 +153,7 @@ def main():
                h.get("ok") is True and woken_state == "ready",
                f"health ok={h.get('ok')} state={woken_state}")
         r = curl("POST", f"{BASE}/api/computers/{cid}/stop", {}, headers=["x-acp-request: 1"])
-        record("stop via API", r.get("computer", {}).get("state") == "sleeping", r)
+        record("manual stop via API", r.get("computer", {}).get("state") == "stopped", r)
         r = curl("POST", f"{BASE}/api/computers/{cid}/start", {}, headers=["x-acp-request: 1"])
         record("start via API", r.get("computer", {}).get("state") == "ready", r)
 

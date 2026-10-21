@@ -28,22 +28,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN apt-get update && apt-get install -y --no-install-recommends chromium \
     && rm -rf /var/lib/apt/lists/*
 
-# Camoufox (Firefox-based, Playwright-driven). Fetched at build time.
-# Versions pinned to the ones the platform is validated against; bump
-# deliberately. If this step fails in a restricted build environment,
-# the image still works with Chromium; the guest supervisor reports
-# which engine is available via /health.
+# Browser runtime is immutable image data, not copied into every home volume.
 ARG PLAYWRIGHT_VERSION=1.62.0
 ARG CAMOUFOX_VERSION=0.5.8
-RUN pip3 install --no-cache-dir --break-system-packages playwright==${PLAYWRIGHT_VERSION} camoufox==${CAMOUFOX_VERSION} 2>/dev/null \
-    && (mkdir -p /home/agent/.cache \
-        && HOME=/home/agent python3 -m camoufox fetch 2>/dev/null \
-        || echo "WARN: camoufox fetch failed; chromium fallback only") \
-    || echo "WARN: camoufox pip install failed; chromium fallback only"
+RUN pip3 install --no-cache-dir --break-system-packages playwright==${PLAYWRIGHT_VERSION} camoufox==${CAMOUFOX_VERSION} \
+    && mkdir -p /opt/browser-runtime \
+    && HOME=/opt/browser-runtime python3 -m camoufox fetch \
+    && chmod -R a+rX /opt/browser-runtime
 
 # Non-root computer user. Home is the persistent volume mountpoint.
 RUN useradd -m -s /bin/bash -u 1000 agent \
     && mkdir -p /home/agent/.config/openbox /home/agent/.camoufox-profile /home/agent/Downloads \
+    && mkdir -p /home/agent/.cache/camoufox \
+    && cp -a /opt/browser-runtime/.cache/camoufox/config.json /opt/browser-runtime/.cache/camoufox/repo_cache.json /opt/browser-runtime/.cache/camoufox/.0.5_FLAG /home/agent/.cache/camoufox/ \
+    && ln -s /opt/browser-runtime/.cache/camoufox/browsers /home/agent/.cache/camoufox/browsers \
+    && ln -s /opt/browser-runtime/.cache/camoufox/addons /home/agent/.cache/camoufox/addons \
     && chown -R agent:agent /home/agent
 
 COPY config/openbox-autostart /home/agent/.config/openbox/autostart

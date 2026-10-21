@@ -16,7 +16,7 @@ export async function api(method, path, body) {
 }
 
 export const stateColor = (s) =>
-  ({ ready: "#3fb950", idle: "#3fb950", sleeping: "#8b949e", starting: "#d29922",
+  ({ ready: "#3fb950", idle: "#3fb950", sleeping: "#8b949e", stopped: "#8b949e", starting: "#d29922",
      waking: "#d29922", stopping: "#d29922", failed: "#f85149",
      unhealthy: "#f85149", creating: "#d29922" }[s] || "#8b949e");
 

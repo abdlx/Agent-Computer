@@ -142,7 +142,7 @@ def main():
 
     # schema version after all that
     v = sqlite3.connect(f"{TMP}/cp.db").execute("SELECT v FROM schema_version").fetchone()[0]
-    record("A: schema is at v2 after migrations", v == 2, v)
+    record("A: schema is at v3 after migrations", v == 3, v)
 
     # ---------- v1 -> v2 migration on a hand-built v1 database -------------
     TMP2 = "/tmp/acp-test4-mig"
@@ -175,7 +175,7 @@ def main():
         v = sqlite3.connect(f"{TMP2}/cp.db").execute("SELECT v FROM schema_version").fetchone()[0]
         cols = [r[1] for r in sqlite3.connect(f"{TMP2}/cp.db").execute("PRAGMA table_info(computers)")]
         record("migration: v1 database upgrades in place and serves",
-               st == 200 and v == 2 and "limits_enforced" in cols, f"status={st} v={v}")
+               st == 200 and v == 3 and "limits_enforced" in cols, f"status={st} v={v}")
     finally:
         stop(cp)
         stop(sup)

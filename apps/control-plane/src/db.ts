@@ -214,6 +214,10 @@ export class Db {
         ...r, scopes: JSON.parse(String(r.scopes)),
       }));
   }
+  tokenActive(id: string): boolean {
+    const row = this.db.prepare("SELECT revoked FROM mcp_tokens WHERE id = ?").get(id) as { revoked: number } | undefined;
+    return row?.revoked === 0;
+  }
   revokeToken(id: string): void {
     this.db.prepare("UPDATE mcp_tokens SET revoked = 1 WHERE id = ?").run(id);
   }
