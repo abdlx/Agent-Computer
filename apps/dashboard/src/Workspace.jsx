@@ -68,6 +68,54 @@ export default function Workspace({ computerId, navigate }) {
     return () => clearInterval(t);
   }, [computerId]);
 
+  // Active streaming pump: continuously requests incremental updates so the viewer
+  // never stalls or freezes when watching an agent work hands-off.
+  useEffect(() => {
+    const triggerUpdate = () => {
+      const activeRfb = rfbRef.current;
+      if (
+        activeRfb &&
+        isConnectedRef.current &&
+        activeRfb._sock &&
+        activeRfb._rfbConnectionState === "connected" &&
+        activeRfb._fbWidth > 0 &&
+        activeRfb._fbHeight > 0
+      ) {
+        try {
+          const RFBConstructor = resolveRFB(RFB);
+          if (RFBConstructor?.messages?.fbUpdateRequest) {
+            RFBConstructor.messages.fbUpdateRequest(
+              activeRfb._sock,
+              true, // incremental
+              0,
+              0,
+              activeRfb._fbWidth,
+              activeRfb._fbHeight
+            );
+          }
+        } catch {
+          /* transient socket flush */
+        }
+      }
+    };
+
+    const pumpInterval = setInterval(triggerUpdate, 150);
+
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        triggerUpdate();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", onVisibility);
+
+    return () => {
+      clearInterval(pumpInterval);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", onVisibility);
+    };
+  }, []);
+
   const connect = (force = false) => {
     if (!screenRef.current) return;
 
@@ -109,6 +157,40 @@ export default function Workspace({ computerId, navigate }) {
       });
       rfb.scaleViewport = true;
       rfb.background = "#000";
+
+      // Override encodings to fix the "frozen view / not live streaming" bug:
+      // 1. Omit pseudoEncodingContinuousUpdates (-313) which causes deadlock with TigerVNC.
+      // 2. Omit pseudoEncodingCursor (-239) and pseudoEncodingVMwareCursor (0x574d5664) so Xvnc
+      //    renders the shared mouse cursor directly into the framebuffer, making all agent
+      //    mouse movements, clicks, and interactions visible live on screen!
+      rfb._sendEncodings = function () {
+        const encs = [];
+        encs.push(1); // CopyRect
+        if (this._fbDepth === 24) {
+          encs.push(7);    // Tight
+          encs.push(-260); // TightPNG
+          encs.push(16);   // ZRLE
+          encs.push(21);   // JPEG
+          encs.push(5);    // Hextile
+          encs.push(2);    // RRE
+        }
+        encs.push(0); // Raw
+
+        // Pseudo-encodings
+        encs.push(-32 + this._qualityLevel);
+        encs.push(-256 + this._compressionLevel);
+        encs.push(-223); // DesktopSize
+        encs.push(-224); // LastRect
+        encs.push(-258); // QEMUExtendedKeyEvent
+        encs.push(-261); // QEMULedEvent
+        encs.push(-308); // ExtendedDesktopSize
+        encs.push(-309); // Xvp
+        encs.push(-312); // Fence
+        encs.push(-307); // DesktopName
+        encs.push(0xc0a1e5ce); // ExtendedClipboard
+
+        RFBConstructor.messages.clientEncodings(this._sock, encs);
+      };
 
       rfb.addEventListener("connect", () => {
         isConnectingRef.current = false;
