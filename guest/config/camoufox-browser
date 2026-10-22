@@ -1,7 +1,12 @@
 #!/bin/bash
 mkdir -p /home/agent/.camoufox-profile
-PROXY_SERVER="${ACP_BROWSER_PROXY:-${HTTP_PROXY:-${http_proxy:-}}}"
+PROXY_SERVER="${ACP_BROWSER_PROXY:-${HTTP_PROXY:-${http_proxy:-http://acp-egress:3128}}}"
 USER_JS="/home/agent/.camoufox-profile/user.js"
+
+if [ -f /home/agent/.camoufox-profile/prefs.js ]; then
+    sed -i '/network.proxy.type/d' /home/agent/.camoufox-profile/prefs.js 2>/dev/null || true
+    sed -i '/network.trr/d' /home/agent/.camoufox-profile/prefs.js 2>/dev/null || true
+fi
 
 if [ -n "$PROXY_SERVER" ]; then
     PROXY_CLEAN="${PROXY_SERVER#*://}"

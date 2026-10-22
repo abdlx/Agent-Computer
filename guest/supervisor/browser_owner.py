@@ -83,12 +83,25 @@ class BrowserOwner:
             profile = PROFILE_DIRS[self.engine]
             os.makedirs(profile, exist_ok=True)
 
-            proxy_server = os.environ.get("ACP_BROWSER_PROXY") or os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
+            proxy_server = os.environ.get("ACP_BROWSER_PROXY") or os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy") or "http://acp-egress:3128"
             proxy_kwargs = (
                 {"proxy": {"server": proxy_server, "bypass": "localhost,127.0.0.1"}}
                 if proxy_server
                 else {}
             )
+
+            # Clean stale preferences that might conflict with user.js
+            prefs_file = os.path.join(profile, "prefs.js")
+            if os.path.exists(prefs_file):
+                try:
+                    with open(prefs_file, "r") as f:
+                        lines = f.readlines()
+                    filtered = [l for l in lines if "network.proxy.type" not in l and "network.trr" not in l]
+                    if len(filtered) != len(lines):
+                        with open(prefs_file, "w") as f:
+                            f.writelines(filtered)
+                except Exception:
+                    pass
 
             # Ensure user.js has correct proxy preferences and TRR disabled
             user_js = os.path.join(profile, "user.js")

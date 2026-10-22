@@ -4,10 +4,23 @@ set -u
 export DISPLAY=:0
 export HOME=/home/agent
 
+export HTTP_PROXY="${HTTP_PROXY:-http://acp-egress:3128}"
+export HTTPS_PROXY="${HTTPS_PROXY:-http://acp-egress:3128}"
+export http_proxy="${http_proxy:-http://acp-egress:3128}"
+export https_proxy="${https_proxy:-http://acp-egress:3128}"
+export ACP_BROWSER_PROXY="${ACP_BROWSER_PROXY:-http://acp-egress:3128}"
+export NO_PROXY="localhost,127.0.0.1"
+export no_proxy="localhost,127.0.0.1"
+
 # 1. Configure Camoufox profile and proxy preferences
 mkdir -p /home/agent/.camoufox-profile
-PROXY_SERVER="${ACP_BROWSER_PROXY:-${HTTP_PROXY:-${http_proxy:-}}}"
+PROXY_SERVER="${ACP_BROWSER_PROXY:-${HTTP_PROXY:-${http_proxy:-http://acp-egress:3128}}}"
 USER_JS="/home/agent/.camoufox-profile/user.js"
+
+if [ -f /home/agent/.camoufox-profile/prefs.js ]; then
+  sed -i '/network.proxy.type/d' /home/agent/.camoufox-profile/prefs.js 2>/dev/null || true
+  sed -i '/network.trr/d' /home/agent/.camoufox-profile/prefs.js 2>/dev/null || true
+fi
 
 if [ -n "$PROXY_SERVER" ]; then
   PROXY_CLEAN="${PROXY_SERVER#*://}"
