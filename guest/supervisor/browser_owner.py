@@ -83,25 +83,34 @@ class BrowserOwner:
             profile = PROFILE_DIRS[self.engine]
             os.makedirs(profile, exist_ok=True)
 
-            # Unset broken proxy env vars so Camoufox never inherits unresolvable proxy
-            for k in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ACP_BROWSER_PROXY"]:
-                if "acp-egress" in os.environ.get(k, ""):
-                    os.environ.pop(k, None)
+            proxy_server = os.environ.get("ACP_BROWSER_PROXY") or os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
+            proxy_kwargs = (
+                {"proxy": {"server": proxy_server, "bypass": "localhost,127.0.0.1"}}
+                if proxy_server
+                else {}
+            )
 
-            # Ensure user.js forces direct connection without proxies
+            # Ensure user.js has correct proxy preferences and TRR disabled
             user_js = os.path.join(profile, "user.js")
             try:
                 with open(user_js, "w") as f:
-                    f.write('user_pref("network.proxy.type", 0);\n')
+                    if proxy_server:
+                        import urllib.parse
+                        parsed = urllib.parse.urlparse(proxy_server if "://" in proxy_server else f"http://{proxy_server}")
+                        host = parsed.hostname or "acp-egress"
+                        port = parsed.port or 3128
+                        f.write('user_pref("network.proxy.type", 1);\n')
+                        f.write(f'user_pref("network.proxy.http", "{host}");\n')
+                        f.write(f'user_pref("network.proxy.http_port", {port});\n')
+                        f.write(f'user_pref("network.proxy.ssl", "{host}");\n')
+                        f.write(f'user_pref("network.proxy.ssl_port", {port});\n')
+                        f.write('user_pref("network.proxy.share_proxy_settings", true);\n')
+                        f.write('user_pref("network.proxy.no_proxies_on", "localhost, 127.0.0.1");\n')
+                    else:
+                        f.write('user_pref("network.proxy.type", 0);\n')
+                    f.write('user_pref("network.trr.mode", 5);\n')
             except Exception:
                 pass
-
-            proxy_server = os.environ.get("ACP_BROWSER_PROXY")
-            proxy_kwargs = (
-                {"proxy": {"server": proxy_server, "bypass": "localhost,127.0.0.1"}}
-                if proxy_server and "acp-egress" not in proxy_server
-                else {}
-            )
 
             if self.engine == "camoufox":
                 from camoufox.async_api import AsyncCamoufox

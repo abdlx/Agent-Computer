@@ -1,18 +1,39 @@
 #!/bin/bash
-# 1. Unset proxy env vars so Camoufox never inherits unresolvable proxies
-unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ACP_BROWSER_PROXY 2>/dev/null || true
-
-# 2. Ensure clean profile directory exists and remove any stale proxy prefs
 mkdir -p /home/agent/.camoufox-profile
-echo 'user_pref("network.proxy.type", 0);' > /home/agent/.camoufox-profile/user.js 2>/dev/null || true
-if [ -f /home/agent/.camoufox-profile/prefs.js ]; then
-    sed -i '/network.proxy/d' /home/agent/.camoufox-profile/prefs.js 2>/dev/null || true
-    sed -i '/acp-egress/d' /home/agent/.camoufox-profile/prefs.js 2>/dev/null || true
+PROXY_SERVER="${ACP_BROWSER_PROXY:-${HTTP_PROXY:-${http_proxy:-}}}"
+USER_JS="/home/agent/.camoufox-profile/user.js"
+
+if [ -n "$PROXY_SERVER" ]; then
+    PROXY_CLEAN="${PROXY_SERVER#*://}"
+    PROXY_HOST="${PROXY_CLEAN%%:*}"
+    PROXY_PORT="${PROXY_CLEAN##*:}"
+    PROXY_PORT="${PROXY_PORT%%/*}"
+    [ -z "$PROXY_PORT" ] && PROXY_PORT=3128
+
+    cat << EOF > "$USER_JS"
+user_pref("network.proxy.type", 1);
+user_pref("network.proxy.http", "${PROXY_HOST}");
+user_pref("network.proxy.http_port", ${PROXY_PORT});
+user_pref("network.proxy.ssl", "${PROXY_HOST}");
+user_pref("network.proxy.ssl_port", ${PROXY_PORT});
+user_pref("network.proxy.share_proxy_settings", true);
+user_pref("network.proxy.no_proxies_on", "localhost, 127.0.0.1");
+user_pref("network.trr.mode", 5);
+EOF
+else
+    cat << 'EOF' > "$USER_JS"
+user_pref("network.proxy.type", 0);
+user_pref("network.trr.mode", 5);
+EOF
 fi
 
 BIN=$(find /opt/browser-runtime/.cache/camoufox/browsers -name "camoufox" -type f -executable 2>/dev/null | head -n 1)
 if [ -n "$BIN" ]; then
     exec "$BIN" --profile /home/agent/.camoufox-profile "$@"
 elif which chromium >/dev/null 2>&1; then
-    exec chromium --user-data-dir=/home/agent/.config/agent-browser-profile "$@"
+    PROXY_ARG=""
+    if [ -n "$PROXY_SERVER" ]; then
+        PROXY_ARG="--proxy-server=$PROXY_SERVER --proxy-bypass-list=localhost,127.0.0.1"
+    fi
+    exec chromium --user-data-dir=/home/agent/.config/agent-browser-profile $PROXY_ARG "$@"
 fi

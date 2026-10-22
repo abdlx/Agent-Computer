@@ -4,15 +4,34 @@ set -u
 export DISPLAY=:0
 export HOME=/home/agent
 
-# 1. Unset proxy env vars in container runtime so browsers and tools never inherit broken proxies
-unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ACP_BROWSER_PROXY 2>/dev/null || true
-
-# 2. Ensure fresh Camoufox profile on every start to prevent corrupt prefs / stale proxy state
-rm -rf /home/agent/.camoufox-profile
+# 1. Configure Camoufox profile and proxy preferences
 mkdir -p /home/agent/.camoufox-profile
-cat << 'EOF' > /home/agent/.camoufox-profile/user.js
-user_pref("network.proxy.type", 0);
+PROXY_SERVER="${ACP_BROWSER_PROXY:-${HTTP_PROXY:-${http_proxy:-}}}"
+USER_JS="/home/agent/.camoufox-profile/user.js"
+
+if [ -n "$PROXY_SERVER" ]; then
+  PROXY_CLEAN="${PROXY_SERVER#*://}"
+  PROXY_HOST="${PROXY_CLEAN%%:*}"
+  PROXY_PORT="${PROXY_CLEAN##*:}"
+  PROXY_PORT="${PROXY_PORT%%/*}"
+  [ -z "$PROXY_PORT" ] && PROXY_PORT=3128
+
+  cat << EOF > "$USER_JS"
+user_pref("network.proxy.type", 1);
+user_pref("network.proxy.http", "${PROXY_HOST}");
+user_pref("network.proxy.http_port", ${PROXY_PORT});
+user_pref("network.proxy.ssl", "${PROXY_HOST}");
+user_pref("network.proxy.ssl_port", ${PROXY_PORT});
+user_pref("network.proxy.share_proxy_settings", true);
+user_pref("network.proxy.no_proxies_on", "localhost, 127.0.0.1");
+user_pref("network.trr.mode", 5);
 EOF
+else
+  cat << 'EOF' > "$USER_JS"
+user_pref("network.proxy.type", 0);
+user_pref("network.trr.mode", 5);
+EOF
+fi
 chown -R agent:agent /home/agent/.camoufox-profile 2>/dev/null || true
 
 # Migrate only the exact legacy immutable-cache link created by this project.

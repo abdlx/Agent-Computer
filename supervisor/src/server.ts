@@ -165,19 +165,20 @@ async function createComputer(body: Record<string, unknown>) {
   const isolated = NETWORK !== "none" ? await createGuestNetwork(id, dockerCall, process.env.ACP_EGRESS_CONTAINER ?? "agentcomputer-egress-1") : null;
   const guestNetwork = isolated?.name ?? "none";
   const useNetwork = isolated !== null;
+  const proxyUrl = process.env.ACP_EGRESS_PROXY_URL || "http://acp-egress:3128";
   const payload = {
     Image: GUEST_IMAGE,
     Env: [
       `GUEST_TOKEN=${guestToken}`,
       "GUEST_SUPERVISOR_SOCK=/run/acp-guest/api.sock",
-      ...(process.env.ACP_ENABLE_EGRESS_PROXY === "true" && process.env.ACP_EGRESS_PROXY_URL ? [
-        `HTTP_PROXY=${process.env.ACP_EGRESS_PROXY_URL}`,
-        `HTTPS_PROXY=${process.env.ACP_EGRESS_PROXY_URL}`,
-        `http_proxy=${process.env.ACP_EGRESS_PROXY_URL}`,
-        `https_proxy=${process.env.ACP_EGRESS_PROXY_URL}`,
+      ...(useNetwork ? [
+        `HTTP_PROXY=${proxyUrl}`,
+        `HTTPS_PROXY=${proxyUrl}`,
+        `http_proxy=${proxyUrl}`,
+        `https_proxy=${proxyUrl}`,
         "NO_PROXY=localhost,127.0.0.1",
         "no_proxy=localhost,127.0.0.1",
-        `ACP_BROWSER_PROXY=${process.env.ACP_EGRESS_PROXY_URL}`,
+        `ACP_BROWSER_PROXY=${proxyUrl}`,
       ] : [])
     ],
     Labels: {
