@@ -27,7 +27,7 @@ import * as http from "node:http";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { createGuestNetwork } from "./network.ts";
+import { createGuestNetwork, attachEgressProxy } from "./network.ts";
 import { admission, validateLimits } from "./resources.ts";
 
 const SOCK = process.env.ACP_SUPERVISOR_SOCK ?? "/run/acp/supervisor.sock";
@@ -292,6 +292,16 @@ const routes: Record<string, (body: Record<string, unknown>) => Promise<unknown>
       const decision = await resources({ memoryMb: hc.Memory / 1048576, cpuMillis: hc.NanoCpus / 1000000 });
       if (!decision.allowed) throw Object.assign(new Error(decision.reason), { code: 409 });
     }
+    const identity = identities[id];
+    if (identity?.networkId) {
+      try {
+        const proxyId = await attachEgressProxy(dockerCall, identity.networkId, process.env.ACP_EGRESS_CONTAINER ?? "agentcomputer-egress-1");
+        identity.proxyId = proxyId;
+        saveIdentities();
+      } catch (e) {
+        console.error(`[supervisor] failed to attach egress proxy to network ${identity.networkId}:`, e);
+      }
+    }
     const r = await dockerCall("POST", `/containers/${d.Id}/start`);
     if (r.status !== 204 && r.status !== 304) throw Object.assign(new Error(`start failed: ${r.status}`), { code: 502 });
     return { ok: true };
@@ -343,6 +353,17 @@ const routes: Record<string, (body: Record<string, unknown>) => Promise<unknown>
   "/inspect": async (b) => {
     const id = String(b.computerId ?? "");
     const d = await inspectManaged(id);
+    const identity = identities[id];
+    if (d.State.Running && identity?.networkId) {
+      attachEgressProxy(dockerCall, identity.networkId, process.env.ACP_EGRESS_CONTAINER ?? "agentcomputer-egress-1")
+        .then((proxyId) => {
+          if (identity.proxyId !== proxyId) {
+            identity.proxyId = proxyId;
+            saveIdentities();
+          }
+        })
+        .catch(() => {});
+    }
     return {
       running: d.State.Running, status: d.State.Status, startedAt: d.State.StartedAt,
       image: d.Config.Image, privileged: d.HostConfig.Privileged,
@@ -415,4 +436,13 @@ process.on("uncaughtException", (e) => {
 server.listen(SOCK, () => {
   try { fs.chmodSync(SOCK, 0o660); } catch { /* best effort */ }
   console.log(`acp-supervisor listening on ${SOCK} (image=${GUEST_IMAGE}, network=${NETWORK})`);
+  if (NETWORK !== "none") {
+    for (const identity of Object.values(identities)) {
+      if (identity?.networkId && !identity.deleting) {
+        attachEgressProxy(dockerCall, identity.networkId, process.env.ACP_EGRESS_CONTAINER ?? "agentcomputer-egress-1")
+          .then((pId) => { identity.proxyId = pId; saveIdentities(); })
+          .catch((err) => console.error("[supervisor] startup proxy attach failed:", err));
+      }
+    }
+  }
 });
