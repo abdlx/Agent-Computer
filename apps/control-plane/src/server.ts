@@ -151,9 +151,21 @@ function readBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
 
 function authUser(req: http.IncomingMessage): Ctx["user"] {
   const cookies = parseCookies(req.headers.cookie);
-  if (!cookies.acp_session) return null;
-  const u = db.sessionUser(sha256(cookies.acp_session));
-  return u ? { id: u.id, username: u.username } : null;
+  if (cookies.acp_session) {
+    const u = db.sessionUser(sha256(cookies.acp_session));
+    if (u) return { id: u.id, username: u.username };
+  }
+  const authz = req.headers.authorization ?? "";
+  const queryToken = new URL(req.url ?? "/", "http://localhost").searchParams.get("token") || "";
+  const bearer = authz.startsWith("Bearer ") ? authz.slice(7).trim() : queryToken.trim();
+  if (bearer) {
+    const tokenRow = db.tokenByHash(sha256(bearer));
+    if (tokenRow && !tokenRow.revoked) {
+      db.touchToken(tokenRow.id);
+      return { id: 0, username: `mcp:${tokenRow.name}` };
+    }
+  }
+  return null;
 }
 
 type Handler = (ctx: Ctx) => Promise<{
@@ -499,7 +511,7 @@ const server = http.createServer(async (req, res) => {
     if (!params || r.method !== req.method) continue;
     const user = authUser(req);
     if (r.auth && !user) return send(401, { error: "not signed in" });
-    if (r.auth && req.method !== "GET" && req.headers["x-acp-request"] !== "1") {
+    if (r.auth && req.method !== "GET" && req.headers["x-acp-request"] !== "1" && !req.headers.authorization) {
       return send(403, { error: "missing x-acp-request header" });
     }
     try {
@@ -582,10 +594,17 @@ server.on("upgrade", async (req, socket, head) => {
       req.headers["x-forwarded-protocol"] === "https" ||
       String(req.headers["cf-visitor"]).includes("https")
     ));
-  if (!originAllowed(req.headers.origin, host, secureTransport, process.env.ACP_PUBLIC_ORIGIN)) return fail(403, "Forbidden");
+  const authz = req.headers.authorization ?? "";
+  const queryToken = new URL(req.url ?? "/", "http://localhost").searchParams.get("token") || "";
+  const bearer = authz.startsWith("Bearer ") ? authz.slice(7).trim() : queryToken.trim();
+  const tokenRow = bearer ? db.tokenByHash(sha256(bearer)) : null;
+  if (!tokenRow && !originAllowed(req.headers.origin, host, secureTransport, process.env.ACP_PUBLIC_ORIGIN)) return fail(403, "Forbidden");
   const cookies = parseCookies(req.headers.cookie);
-  const user = cookies.acp_session ? db.sessionUser(sha256(cookies.acp_session)) : null;
+  const user = cookies.acp_session
+    ? db.sessionUser(sha256(cookies.acp_session))
+    : (tokenRow && !tokenRow.revoked ? { id: 0, username: `mcp:${tokenRow.name}` } : null);
   if (!user) return fail(401, "Unauthorized");
+  if (tokenRow) db.touchToken(tokenRow.id);
   let computerId: string;
   try { computerId = decodeURIComponent(m[1]); } catch { return fail(400, "Bad Request"); }
   const row = db.computer(computerId);
@@ -599,7 +618,8 @@ server.on("upgrade", async (req, socket, head) => {
     leaseId = lease.id;
     renew = setInterval(() => {
       try {
-        if (!db.sessionUser(sha256(cookies.acp_session))) { socket.destroy(); return; }
+        if (cookies.acp_session && !db.sessionUser(sha256(cookies.acp_session))) { socket.destroy(); return; }
+        if (tokenRow && db.tokenByHash(sha256(bearer))?.revoked) { socket.destroy(); return; }
         engine.releaseLease(leaseId!);
         leaseId = engine.acquireLease(row.id, `human:${user.username}`, 120).id;
       } catch { /* computer may be gone */ }
