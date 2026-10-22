@@ -10,6 +10,9 @@ unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ACP_BROWSER_PROXY 2>/dev/nul
 # 2. Ensure fresh Camoufox profile on every start to prevent corrupt prefs / stale proxy state
 rm -rf /home/agent/.camoufox-profile
 mkdir -p /home/agent/.camoufox-profile
+cat << 'EOF' > /home/agent/.camoufox-profile/user.js
+user_pref("network.proxy.type", 0);
+EOF
 chown -R agent:agent /home/agent/.camoufox-profile 2>/dev/null || true
 
 # Migrate only the exact legacy immutable-cache link created by this project.

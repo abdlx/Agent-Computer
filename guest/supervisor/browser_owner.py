@@ -88,18 +88,13 @@ class BrowserOwner:
                 if "acp-egress" in os.environ.get(k, ""):
                     os.environ.pop(k, None)
 
-            # Clean any corrupted proxy preferences from profile
-            prefs_file = os.path.join(profile, "prefs.js")
-            if os.path.exists(prefs_file):
-                try:
-                    with open(prefs_file, "r") as f:
-                        lines = f.readlines()
-                    filtered = [l for l in lines if "network.proxy" not in l and "acp-egress" not in l]
-                    if len(filtered) != len(lines):
-                        with open(prefs_file, "w") as f:
-                            f.writelines(filtered)
-                except Exception:
-                    pass
+            # Ensure user.js forces direct connection without proxies
+            user_js = os.path.join(profile, "user.js")
+            try:
+                with open(user_js, "w") as f:
+                    f.write('user_pref("network.proxy.type", 0);\n')
+            except Exception:
+                pass
 
             proxy_server = os.environ.get("ACP_BROWSER_PROXY")
             proxy_kwargs = (

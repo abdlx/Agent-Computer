@@ -4,6 +4,7 @@ unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ACP_BROWSER_PROXY 2>/dev/nul
 
 # 2. Ensure clean profile directory exists and remove any stale proxy prefs
 mkdir -p /home/agent/.camoufox-profile
+echo 'user_pref("network.proxy.type", 0);' > /home/agent/.camoufox-profile/user.js 2>/dev/null || true
 if [ -f /home/agent/.camoufox-profile/prefs.js ]; then
     sed -i '/network.proxy/d' /home/agent/.camoufox-profile/prefs.js 2>/dev/null || true
     sed -i '/acp-egress/d' /home/agent/.camoufox-profile/prefs.js 2>/dev/null || true
