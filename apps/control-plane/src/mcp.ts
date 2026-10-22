@@ -500,7 +500,8 @@ export function makeMcpHandler(deps: { db: Db; engine: LifecycleEngine; sup: Sup
     const method = String(msg.method ?? "");
     if (id === null || method.startsWith("notifications/")) {
       res.writeHead(202);
-      return res.end();
+      res.end();
+      return;
     }
     const rpcError = (code: number, message: string) =>
       sendJson(200, { jsonrpc: "2.0", error: { code, message }, id });

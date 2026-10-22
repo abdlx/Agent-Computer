@@ -608,15 +608,35 @@ server.on("upgrade", async (req, socket, head) => {
   } catch (e) {
     return fail(502, "Bad Gateway");
   }
+  if ("setTimeout" in socket && typeof (socket as net.Socket).setTimeout === "function") {
+    (socket as net.Socket).setTimeout(0);
+  }
+  if ("setKeepAlive" in socket && typeof (socket as net.Socket).setKeepAlive === "function") {
+    (socket as net.Socket).setKeepAlive(true, 15000);
+  }
+
   const upstream = net.createConnection(row.socketPath);
+  upstream.setTimeout(0);
+  upstream.setKeepAlive(true, 15000);
+
+  let cleaned = false;
   const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
     if (renew) clearInterval(renew);
-    if (leaseId) engine.releaseLease(leaseId);
-    upstream.destroy();
+    if (leaseId) {
+      try { engine.releaseLease(leaseId); } catch { /* noop */ }
+    }
+    try { upstream.destroy(); } catch { /* noop */ }
+    try { socket.destroy(); } catch { /* noop */ }
   };
   socket.on("close", cleanup);
   socket.on("error", cleanup);
-  upstream.on("error", () => socket.destroy());
+  upstream.on("close", cleanup);
+  upstream.on("error", (err) => {
+    console.warn(`[vnc-upstream-error] computer=${row.id}: ${err.message}`);
+    cleanup();
+  });
   upstream.on("connect", () => {
     const key = req.headers["sec-websocket-key"];
     const proto = req.headers["sec-websocket-protocol"];

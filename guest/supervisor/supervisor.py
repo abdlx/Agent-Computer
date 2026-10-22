@@ -574,6 +574,14 @@ class Handler(BaseHTTPRequestHandler):
         if rest:
             self.connection.sendall(rest)
 
+        # Remove the 10-second connect timeout now that the handshake has succeeded.
+        # Otherwise, upstream.recv() will raise socket.timeout whenever the screen is idle for 10 seconds.
+        upstream.settimeout(None)
+        try:
+            self.connection.settimeout(None)
+        except Exception:
+            pass
+
         observer = HumanInputObserver(human_takeover)
 
         def pump(src, dst, observe=False):

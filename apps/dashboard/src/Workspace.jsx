@@ -29,6 +29,16 @@ export default function Workspace({ computerId, navigate }) {
   const screenRef = useRef(null);
   const rfbRef = useRef(null);
   const wakeOnOpenRef = useRef(true);
+  const intentionalCloseRef = useRef(false);
+  const isConnectedRef = useRef(false);
+  const isConnectingRef = useRef(false);
+  const connectRetryCount = useRef(0);
+  const connectTimeoutRef = useRef(null);
+  const computerRef = useRef(null);
+  const prevRunningRef = useRef(false);
+
+  // Keep computerRef up to date for closures
+  computerRef.current = computer;
 
   const load = async () => {
     try {
@@ -58,12 +68,19 @@ export default function Workspace({ computerId, navigate }) {
     return () => clearInterval(t);
   }, [computerId]);
 
-  const connectRetryCount = useRef(0);
-  const connectTimeoutRef = useRef(null);
-
-  const connect = () => {
+  const connect = (force = false) => {
     if (!screenRef.current) return;
+
+    // Do not tear down an active or connecting stream unless force-requested
+    if (!force && (isConnectedRef.current || isConnectingRef.current) && rfbRef.current) {
+      return;
+    }
+
+    clearTimeout(connectTimeoutRef.current);
+    connectTimeoutRef.current = null;
+
     if (rfbRef.current) {
+      intentionalCloseRef.current = true;
       try {
         rfbRef.current.disconnect();
       } catch {
@@ -79,6 +96,10 @@ export default function Workspace({ computerId, navigate }) {
 
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     const url = `${proto}//${location.host}/api/computers/${computerId}/vnc`;
+
+    intentionalCloseRef.current = false;
+    isConnectingRef.current = true;
+    isConnectedRef.current = false;
     setConnState("connecting");
 
     try {
@@ -90,6 +111,8 @@ export default function Workspace({ computerId, navigate }) {
       rfb.background = "#000";
 
       rfb.addEventListener("connect", () => {
+        isConnectingRef.current = false;
+        isConnectedRef.current = true;
         setConnState("connected");
         setError("");
         connectRetryCount.current = 0;
@@ -97,16 +120,28 @@ export default function Workspace({ computerId, navigate }) {
 
       rfb.addEventListener("disconnect", (e) => {
         rfbRef.current = null;
+        isConnectingRef.current = false;
+        isConnectedRef.current = false;
+
+        if (intentionalCloseRef.current) {
+          intentionalCloseRef.current = false;
+          return;
+        }
+
         console.warn("RFB disconnect event:", e.detail);
 
-        // If disconnected immediately upon waking/starting, retry up to 3 times
-        if (connectRetryCount.current < 3 && ["ready", "idle"].includes(computer?.state)) {
+        const currentComp = computerRef.current;
+        const isRunning = currentComp && ["ready", "idle"].includes(currentComp.state);
+
+        // Auto-retry with backoff only if the computer is currently running and retries aren't exhausted
+        if (connectRetryCount.current < 3 && isRunning) {
           connectRetryCount.current += 1;
           setConnState("connecting");
+          const delay = Math.min(1000 * Math.pow(2, connectRetryCount.current - 1), 4000);
           clearTimeout(connectTimeoutRef.current);
           connectTimeoutRef.current = setTimeout(() => {
-            connect();
-          }, 1500);
+            connect(true);
+          }, delay);
         } else {
           setConnState(e.detail?.clean ? "disconnected" : "failed");
         }
@@ -115,6 +150,8 @@ export default function Workspace({ computerId, navigate }) {
       rfbRef.current = rfb;
     } catch (err) {
       console.error("Failed to initialize RFB:", err);
+      isConnectingRef.current = false;
+      isConnectedRef.current = false;
       setConnState("failed");
       setError(err.message);
     }
@@ -122,33 +159,55 @@ export default function Workspace({ computerId, navigate }) {
 
   useEffect(() => {
     if (!computer) return;
-    if (!["sleeping", "stopped"].includes(computer.state)) {
-      wakeOnOpenRef.current = false;
-      connect();
-    } else if (wakeOnOpenRef.current) {
-      wakeOnOpenRef.current = false;
-      api("POST", `/api/computers/${computerId}/wake`, {}).then(load).catch((e) => setError(e.message));
+    const isRunning = !["sleeping", "stopped"].includes(computer.state);
+
+    if (isRunning) {
+      // Connect if computer just transitioned into running, or if not yet connected
+      if (!prevRunningRef.current || (!isConnectedRef.current && !isConnectingRef.current && !rfbRef.current)) {
+        prevRunningRef.current = true;
+        wakeOnOpenRef.current = false;
+        connect();
+      }
+    } else {
+      prevRunningRef.current = false;
+      if (wakeOnOpenRef.current) {
+        wakeOnOpenRef.current = false;
+        api("POST", `/api/computers/${computerId}/wake`, {}).then(load).catch((e) => setError(e.message));
+      }
     }
   }, [computer?.state]);
 
   useEffect(() => () => {
+    intentionalCloseRef.current = true;
+    clearTimeout(connectTimeoutRef.current);
+    connectTimeoutRef.current = null;
+    isConnectingRef.current = false;
+    isConnectedRef.current = false;
     try {
       rfbRef.current?.disconnect();
     } catch {
       /* noop */
     }
+    rfbRef.current = null;
   }, []);
 
   const act = async (action) => {
     setError("");
     try {
-      if (action === "sleep") {
+      if (action === "sleep" || action === "stop") {
+        intentionalCloseRef.current = true;
+        clearTimeout(connectTimeoutRef.current);
+        connectTimeoutRef.current = null;
+        isConnectingRef.current = false;
+        isConnectedRef.current = false;
+        prevRunningRef.current = false;
         try {
           rfbRef.current?.disconnect();
         } catch {
           /* noop */
         }
         rfbRef.current = null;
+        setConnState("disconnected");
       }
       await api("POST", `/api/computers/${computerId}/${action}`, {});
       await load();
@@ -246,8 +305,8 @@ export default function Workspace({ computerId, navigate }) {
                 <button
                   className="btn-modal-primary"
                   onClick={() => {
-                    setConnState("connecting");
-                    connect();
+                    connectRetryCount.current = 0;
+                    connect(true);
                   }}
                 >
                   Reconnect
@@ -259,8 +318,8 @@ export default function Workspace({ computerId, navigate }) {
                 <button
                   className="btn-modal-primary"
                   onClick={() => {
-                    setConnState("connecting");
-                    connect();
+                    connectRetryCount.current = 0;
+                    connect(true);
                   }}
                 >
                   Reconnect
