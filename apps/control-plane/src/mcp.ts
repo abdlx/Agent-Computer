@@ -458,8 +458,24 @@ export function makeMcpHandler(deps: { db: Db; engine: LifecycleEngine; sup: Sup
       res.writeHead(status, { "content-type": "application/json", ...headers });
       res.end(JSON.stringify(obj));
     };
+    if (req.method === "OPTIONS") {
+      res.writeHead(204, {
+        "access-control-allow-origin": "*",
+        "access-control-allow-methods": "GET, POST, OPTIONS",
+        "access-control-allow-headers": "Content-Type, Authorization",
+      });
+      res.end();
+      return;
+    }
+    if (req.method === "GET") {
+      return sendJson(200, {
+        name: "agent-computer",
+        version: "1.0.0",
+        mcp: true,
+        protocolVersions: PROTOCOL_VERSIONS,
+      });
+    }
     if (req.method !== "POST") {
-      // No server-initiated stream in this gateway.
       return sendJson(405, { jsonrpc: "2.0", error: { code: -32000, message: "method not allowed" }, id: null });
     }
     // ---- auth ----------------------------------------------------------
