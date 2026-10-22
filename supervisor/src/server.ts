@@ -167,7 +167,19 @@ async function createComputer(body: Record<string, unknown>) {
   const useNetwork = isolated !== null;
   const payload = {
     Image: GUEST_IMAGE,
-    Env: [`GUEST_TOKEN=${guestToken}`, "GUEST_SUPERVISOR_SOCK=/run/acp-guest/api.sock", ...(useNetwork ? ["HTTP_PROXY=http://acp-egress:3128", "HTTPS_PROXY=http://acp-egress:3128", "http_proxy=http://acp-egress:3128", "https_proxy=http://acp-egress:3128", "NO_PROXY=localhost,127.0.0.1", "no_proxy=localhost,127.0.0.1", "ACP_BROWSER_PROXY=http://acp-egress:3128"] : [])],
+    Env: [
+      `GUEST_TOKEN=${guestToken}`,
+      "GUEST_SUPERVISOR_SOCK=/run/acp-guest/api.sock",
+      ...(process.env.ACP_ENABLE_EGRESS_PROXY === "true" && process.env.ACP_EGRESS_PROXY_URL ? [
+        `HTTP_PROXY=${process.env.ACP_EGRESS_PROXY_URL}`,
+        `HTTPS_PROXY=${process.env.ACP_EGRESS_PROXY_URL}`,
+        `http_proxy=${process.env.ACP_EGRESS_PROXY_URL}`,
+        `https_proxy=${process.env.ACP_EGRESS_PROXY_URL}`,
+        "NO_PROXY=localhost,127.0.0.1",
+        "no_proxy=localhost,127.0.0.1",
+        `ACP_BROWSER_PROXY=${process.env.ACP_EGRESS_PROXY_URL}`,
+      ] : [])
+    ],
     Labels: {
       "acp.managed": "true",
       "acp.computer": id,

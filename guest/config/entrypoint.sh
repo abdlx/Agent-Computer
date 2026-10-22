@@ -4,6 +4,14 @@ set -u
 export DISPLAY=:0
 export HOME=/home/agent
 
+# 1. Unset proxy env vars in container runtime so browsers and tools never inherit broken proxies
+unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ACP_BROWSER_PROXY 2>/dev/null || true
+
+# 2. Ensure fresh Camoufox profile on every start to prevent corrupt prefs / stale proxy state
+rm -rf /home/agent/.camoufox-profile
+mkdir -p /home/agent/.camoufox-profile
+chown -R agent:agent /home/agent/.camoufox-profile 2>/dev/null || true
+
 # Migrate only the exact legacy immutable-cache link created by this project.
 # Browser/fontconfig metadata stays writable; large binaries and addons stay in the image.
 CACHE=/home/agent/.cache/camoufox

@@ -82,19 +82,45 @@ class BrowserOwner:
             from playwright.async_api import async_playwright
             profile = PROFILE_DIRS[self.engine]
             os.makedirs(profile, exist_ok=True)
+
+            # Unset broken proxy env vars so Camoufox never inherits unresolvable proxy
+            for k in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ACP_BROWSER_PROXY"]:
+                if "acp-egress" in os.environ.get(k, ""):
+                    os.environ.pop(k, None)
+
+            # Clean any corrupted proxy preferences from profile
+            prefs_file = os.path.join(profile, "prefs.js")
+            if os.path.exists(prefs_file):
+                try:
+                    with open(prefs_file, "r") as f:
+                        lines = f.readlines()
+                    filtered = [l for l in lines if "network.proxy" not in l and "acp-egress" not in l]
+                    if len(filtered) != len(lines):
+                        with open(prefs_file, "w") as f:
+                            f.writelines(filtered)
+                except Exception:
+                    pass
+
+            proxy_server = os.environ.get("ACP_BROWSER_PROXY")
+            proxy_kwargs = (
+                {"proxy": {"server": proxy_server, "bypass": "localhost,127.0.0.1"}}
+                if proxy_server and "acp-egress" not in proxy_server
+                else {}
+            )
+
             if self.engine == "camoufox":
                 from camoufox.async_api import AsyncCamoufox
                 self._cfx = AsyncCamoufox(
                     persistent_context=True, user_data_dir=profile,
                     headless=False,
-                    **({"proxy": {"server": os.environ["ACP_BROWSER_PROXY"], "bypass": "localhost,127.0.0.1"}} if os.environ.get("ACP_BROWSER_PROXY") else {}))
+                    **proxy_kwargs)
                 self._ctx = await self._cfx.__aenter__()
             else:
                 self._pw = await async_playwright().start()
                 self._ctx = await self._pw.chromium.launch_persistent_context(
                     profile, headless=False,
                     executable_path="/usr/bin/chromium",
-                    **({"proxy": {"server": os.environ["ACP_BROWSER_PROXY"], "bypass": "localhost,127.0.0.1"}} if os.environ.get("ACP_BROWSER_PROXY") else {}),
+                    **proxy_kwargs,
                     args=["--no-first-run", "--disable-dev-shm-usage"])
             self._page = (self._ctx.pages[0] if self._ctx.pages
                           else await self._ctx.new_page())
