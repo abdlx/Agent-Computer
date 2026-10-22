@@ -582,6 +582,11 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
+        try:
+            upstream.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except Exception:
+            pass
+
         observer = HumanInputObserver(human_takeover)
 
         def pump(src, dst, observe=False):
@@ -591,7 +596,10 @@ class Handler(BaseHTTPRequestHandler):
                     if not data:
                         break
                     if observe:
-                        observer.feed(data)
+                        try:
+                            observer.feed(data)
+                        except Exception:
+                            pass
                     dst.sendall(data)
             except Exception:
                 pass

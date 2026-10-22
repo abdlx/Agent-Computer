@@ -131,13 +131,14 @@ export default function Workspace({ computerId, navigate }) {
         console.warn("RFB disconnect event:", e.detail);
 
         const currentComp = computerRef.current;
-        const isRunning = currentComp && ["ready", "idle"].includes(currentComp.state);
+        const shouldStayConnected = currentComp && !["sleeping", "stopped"].includes(currentComp.state);
 
-        // Auto-retry with backoff only if the computer is currently running and retries aren't exhausted
-        if (connectRetryCount.current < 3 && isRunning) {
+        // Auto-reconnect persistently as long as the computer is running (never give up unless stopped/sleeping)
+        if (shouldStayConnected) {
           connectRetryCount.current += 1;
           setConnState("connecting");
-          const delay = Math.min(1000 * Math.pow(2, connectRetryCount.current - 1), 4000);
+          // Smooth backoff capped at 2s
+          const delay = Math.min(500 * Math.pow(1.5, Math.min(connectRetryCount.current - 1, 4)), 2000);
           clearTimeout(connectTimeoutRef.current);
           connectTimeoutRef.current = setTimeout(() => {
             connect(true);

@@ -422,11 +422,21 @@ export class LifecycleEngine {
 
   /** Wake-on-call: ensure the computer is ready, then run the guest call. */
   async call<T>(computerId: string, fn: (c: Computer) => Promise<T>): Promise<T> {
-    this.get(computerId);
+    const c = this.get(computerId);
     const op = this.beginOperation(computerId, "guest-call", "");
     try {
-      await this.wake(computerId);
-      return await fn(this.get(computerId));
+      if (c.state !== "ready") {
+        await this.wake(computerId);
+      }
+      try {
+        return await fn(this.get(computerId));
+      } catch (err) {
+        if (this.get(computerId).state !== "stopped") {
+          await this.wake(computerId);
+          return await fn(this.get(computerId));
+        }
+        throw err;
+      }
     } finally {
       this.endOperation(op.id);
     }
