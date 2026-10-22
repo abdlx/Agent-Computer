@@ -6,3 +6,4 @@ __pycache__/
 .build/
 node_modules/
 apps/dashboard/dist/
+scratch/
