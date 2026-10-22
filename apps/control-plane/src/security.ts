@@ -8,6 +8,12 @@ export function originAllowed(origin: string | undefined, host: string | undefin
     if (supplied.pathname !== "/" || supplied.search || supplied.hash || supplied.username || supplied.password) return false;
     if (supplied.origin === expected.origin) return true;
     if (supplied.host === expected.host && (supplied.protocol === "https:" || supplied.protocol === "http:")) return true;
+    if (
+      (supplied.hostname === "localhost" || supplied.hostname === "127.0.0.1") &&
+      (expected.hostname === "localhost" || expected.hostname === "127.0.0.1")
+    ) {
+      return true;
+    }
     return false;
   } catch { return false; }
 }

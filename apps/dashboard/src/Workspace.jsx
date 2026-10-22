@@ -58,23 +58,66 @@ export default function Workspace({ computerId, navigate }) {
     return () => clearInterval(t);
   }, [computerId]);
 
+  const connectRetryCount = useRef(0);
+  const connectTimeoutRef = useRef(null);
+
   const connect = () => {
-    if (!screenRef.current || rfbRef.current) return;
+    if (!screenRef.current) return;
+    if (rfbRef.current) {
+      try {
+        rfbRef.current.disconnect();
+      } catch {
+        /* noop */
+      }
+      rfbRef.current = null;
+    }
+
+    // Clean previous canvases from screen DOM
+    if (screenRef.current) {
+      screenRef.current.innerHTML = "";
+    }
+
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     const url = `${proto}//${location.host}/api/computers/${computerId}/vnc`;
     setConnState("connecting");
-    const RFBConstructor = resolveRFB(RFB);
-    const rfb = new RFBConstructor(screenRef.current, url, {
-      wsProtocols: ["binary"],
-    });
-    rfb.scaleViewport = true;
-    rfb.background = "#000";
-    rfb.addEventListener("connect", () => setConnState("connected"));
-    rfb.addEventListener("disconnect", (e) => {
-      rfbRef.current = null;
-      setConnState(e.detail.clean ? "disconnected" : "failed");
-    });
-    rfbRef.current = rfb;
+
+    try {
+      const RFBConstructor = resolveRFB(RFB);
+      const rfb = new RFBConstructor(screenRef.current, url, {
+        wsProtocols: ["binary"],
+      });
+      rfb.scaleViewport = true;
+      rfb.background = "#000";
+
+      rfb.addEventListener("connect", () => {
+        setConnState("connected");
+        setError("");
+        connectRetryCount.current = 0;
+      });
+
+      rfb.addEventListener("disconnect", (e) => {
+        rfbRef.current = null;
+        console.warn("RFB disconnect event:", e.detail);
+
+        // If disconnected immediately upon waking/starting, retry up to 3 times
+        if (connectRetryCount.current < 3 && ["ready", "idle"].includes(computer?.state)) {
+          connectRetryCount.current += 1;
+          setConnState("connecting");
+          clearTimeout(connectTimeoutRef.current);
+          connectTimeoutRef.current = setTimeout(() => {
+            connect();
+          }, 1500);
+        } else {
+          setConnState(e.detail?.clean ? "disconnected" : "failed");
+        }
+      });
+
+      rfbRef.current = rfb;
+    } catch (err) {
+      console.error("Failed to initialize RFB:", err);
+      setConnState("failed");
+      setError(err.message);
+    }
   };
 
   useEffect(() => {
