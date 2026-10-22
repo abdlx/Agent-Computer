@@ -50,9 +50,7 @@ function AuthScreen({ mode }) {
     <div className="auth-wrapper">
       <form className="auth-card-box" onSubmit={submit}>
         <div className="auth-brand-center">
-          <div className="brand-icon-box">
-            <Monitor size={24} strokeWidth={2.2} />
-          </div>
+          <img src="/logo.png" alt="Agent Computer" className="auth-logo-img" />
           <h1>Agent Computer</h1>
           {mode === "setup" ? (
             <p>Welcome — create the owner account for this installation. Setup closes after this step.</p>
@@ -208,9 +206,7 @@ export default function App() {
         <div className="sidebar-top">
           {/* Brand Logo */}
           <div className="brand-logo" onClick={() => navigate("#/computers")}>
-            <div className="brand-icon-box">
-              <Monitor size={20} strokeWidth={2.3} />
-            </div>
+            <img src="/logo.png" alt="Agent Computer" className="brand-logo-img" />
             <span className="brand-title">Agent Computer</span>
           </div>
 
