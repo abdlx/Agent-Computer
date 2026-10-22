@@ -64,3 +64,4 @@ clock_font = Sans 9
 clock_padding = 6 0
 clock_background_id = 0
 clock_tooltip = %A, %B %d, %Y
+

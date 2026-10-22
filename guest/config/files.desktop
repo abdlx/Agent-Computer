@@ -8,3 +8,4 @@ Exec=pcmanfm /home/agent
 Icon=system-file-manager
 Terminal=false
 Categories=System;FileManager;
+

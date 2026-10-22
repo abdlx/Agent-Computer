@@ -8,3 +8,4 @@ Exec=/usr/local/bin/camoufox-browser %u
 Icon=web-browser
 Terminal=false
 Categories=Network;WebBrowser;
+

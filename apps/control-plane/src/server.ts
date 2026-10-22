@@ -22,7 +22,7 @@ import {
 } from "./auth.ts";
 import { SupervisorClient, SupervisorDriver } from "./supervisorClient.ts";
 import {
-  LifecycleEngine, guestCall, type EngineState, type Store,
+  LifecycleEngine, guestCall, guestCallRaw, type EngineState, type Store,
 } from "./lifecycle.ts";
 import { originAllowed } from "./security.ts";
 import { makeMcpHandler } from "./mcp.ts";
@@ -156,7 +156,13 @@ function authUser(req: http.IncomingMessage): Ctx["user"] {
   return u ? { id: u.id, username: u.username } : null;
 }
 
-type Handler = (ctx: Ctx) => Promise<{ status?: number; json?: unknown; headers?: Record<string, string> }>;
+type Handler = (ctx: Ctx) => Promise<{
+  status?: number;
+  json?: unknown;
+  headers?: Record<string, string>;
+  raw?: Buffer;
+  contentType?: string;
+}>;
 
 interface Route {
   method: string;
@@ -328,6 +334,20 @@ route("GET", "/api/computers/:id/stats", true, async (ctx) => {
   }
 });
 
+route("GET", "/api/computers/:id/screenshot", true, async (ctx) => {
+  const row = db.computer(ctx.params.id);
+  if (!row) return { status: 404, json: { error: "computer not found" } };
+  try {
+    const c = engine.get(row.id);
+    if (!["ready", "starting", "idle"].includes(c?.state)) {
+      return { status: 409, json: { error: "computer is not running" } };
+    }
+    const shot = await guestCallRaw(c.socketPath, "/screenshot", c.guestToken, 8000);
+    return { raw: shot.data, contentType: shot.contentType };
+  } catch (e) {
+    return { status: 502, json: { error: (e as Error).message } };
+  }
+});
 for (const action of ["start", "wake", "sleep", "stop"] as const) {
   route("POST", `/api/computers/:id/${action}`, true, async (ctx) => {
     const row = db.computer(ctx.params.id);
@@ -492,6 +512,16 @@ const server = http.createServer(async (req, res) => {
           String(req.headers["cf-visitor"]).includes("https")
         ));
       const out = await r.handler({ user, body, params, sessionHash, secure });
+      if (out.raw) {
+        res.writeHead(out.status ?? 200, {
+          "content-type": out.contentType ?? "image/png",
+          "cache-control": "no-cache, no-store, must-revalidate",
+          ...SECURITY_HEADERS,
+          ...(out.headers ?? {}),
+        });
+        res.end(out.raw);
+        return;
+      }
       return send(out.status ?? 200, out.json ?? {}, out.headers ?? {});
     } catch (e) {
       return send(500, { error: (e as Error).message });

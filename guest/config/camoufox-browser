@@ -5,3 +5,4 @@ if [ -n "$BIN" ]; then
 elif which chromium >/dev/null 2>&1; then
     exec chromium --user-data-dir=/home/agent/.config/agent-browser-profile "$@"
 fi
+

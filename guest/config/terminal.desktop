@@ -8,3 +8,4 @@ Exec=xterm -fa "DejaVu Sans Mono" -fs 11
 Icon=utilities-terminal
 Terminal=false
 Categories=System;TerminalEmulator;
+
