@@ -495,7 +495,7 @@ const server = http.createServer(async (req, res) => {
   if (!originAllowed(req.headers.origin, req.headers.host, secureTransport, process.env.ACP_PUBLIC_ORIGIN)) {
     return send(403, { error: "origin not allowed" });
   }
-  if (path === "/mcp") {
+  if (path === "/mcp" || path === "/mcp/" || (req.method === "POST" && (path === "/" || path === "") && Boolean(req.headers["content-type"]?.includes("json")))) {
     await mcpHandler(req, res);
     return;
   }
