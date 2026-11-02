@@ -36,8 +36,18 @@ PROFILE_DIRS = {
 }
 
 
+def get_profile_dir(engine, profile_name="default"):
+    if not profile_name or profile_name == "default":
+        return PROFILE_DIRS[engine]
+    clean_p = re.sub(r"[^a-zA-Z0-9_-]", "", profile_name) or "default"
+    if engine == "camoufox":
+        return os.path.expanduser(f"~/.camoufox-profiles/{clean_p}")
+    return os.path.expanduser(f"~/.config/agent-browser-profiles/{clean_p}")
+
+
 class BrowserOwner:
-    def __init__(self):
+    def __init__(self, profile_name="default"):
+        self.profile_name = profile_name or "default"
         self._thread = None
         self._loop = None
         self._pw = None
@@ -55,7 +65,7 @@ class BrowserOwner:
     # ---- lifecycle (called from any thread; work runs on owner thread) ----
     def start(self, engine):
         if self._thread and self._thread.is_alive():
-            return {"engine": self.engine, "already_running": True}
+            return {"engine": self.engine, "profile_name": self.profile_name, "already_running": True}
         self.engine = engine
         self._started.clear()
         self._start_error = None
@@ -65,7 +75,7 @@ class BrowserOwner:
             raise TimeoutError("browser start timed out")
         if self._start_error:
             raise RuntimeError(self._start_error)
-        return {"engine": self.engine, "profile": PROFILE_DIRS[engine]}
+        return {"engine": self.engine, "profile_name": self.profile_name, "profile": get_profile_dir(engine, self.profile_name)}
 
     def _run(self):
         try:
@@ -80,7 +90,7 @@ class BrowserOwner:
         self._shutdown = asyncio.Event()
         try:
             from playwright.async_api import async_playwright
-            profile = PROFILE_DIRS[self.engine]
+            profile = get_profile_dir(self.engine, self.profile_name)
             os.makedirs(profile, exist_ok=True)
 
             proxy_server = os.environ.get("ACP_BROWSER_PROXY") or os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy") or "http://acp-egress:3128"
@@ -189,6 +199,7 @@ class BrowserOwner:
     async def _state(self):
         return {
             "engine": self.engine,
+            "profile_name": self.profile_name,
             "url": self._page.url if self._page else None,
             "title": (await self._page.title() if self._page else None),
             "pages": len(self._ctx.pages) if self._ctx else 0,

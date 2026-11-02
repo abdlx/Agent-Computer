@@ -15,7 +15,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as net from "node:net";
 import * as path from "node:path";
-import { Db, type ComputerRow } from "./db.ts";
+import { Db, type ComputerRow, type ProfileRow } from "./db.ts";
 import {
   hashPassword, verifyPassword, newSessionToken, sha256, newMcpToken,
   parseCookies, sessionCookie, clearSessionCookie,
@@ -108,10 +108,14 @@ function syncState(id: string): void {
 function publicComputer(row: ComputerRow): Record<string, unknown> {
   let state = row.state;
   try { state = engine.get(row.id).state; } catch { /* keep db state */ }
+  const profiles = db.computerProfiles(row.id);
   return {
     id: row.id, name: row.name, state,
     cpuMillis: row.cpuMillis, memoryMb: row.memoryMb, diskGb: row.diskGb,
     limitsEnforced: row.limitsEnforced, storageQuotaSupported: false,
+    isShared: row.isShared,
+    profileCount: profiles.length,
+    profiles,
     createdAt: row.createdAt, updatedAt: row.updatedAt,
   };
 }
@@ -284,6 +288,7 @@ route("POST", "/api/computers", true, async (ctx) => {
   }
   const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 20) || "computer";
   const id = `${slug}-${crypto.randomBytes(3).toString("hex")}`;
+  const isShared = Boolean(ctx.body.isShared);
   let created;
   try {
     created = await sup.create({ computerId: id, displayName: name, cpuMillis, memoryMb });
@@ -295,9 +300,23 @@ route("POST", "/api/computers", true, async (ctx) => {
     socketPath: created.socketPath, guestToken: created.guestToken,
     state: "starting", cpuMillis, memoryMb, diskGb,
     limitsEnforced: created.limitsEnforced,
+    isShared,
     createdAt: Date.now(), updatedAt: Date.now(),
   };
   db.insertComputer(row);
+  if (isShared) {
+    db.insertProfile({
+      id: `prof_${crypto.randomBytes(4).toString("hex")}`,
+      computerId: id,
+      name: "Default Profile",
+      slug: "default",
+      description: "Default primary profile",
+      color: "#3b82f6",
+      isDefault: true,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+  }
   engine.register({
     id, container: created.container, socketPath: created.socketPath,
     guestToken: created.guestToken, state: "starting",
@@ -432,7 +451,22 @@ function proxyHandler(method: string): Handler {
 }
 
 // MCP tokens (consumed by the Phase 2 gateway).
-route("GET", "/api/tokens", true, async () => ({ json: { tokens: db.tokens() } }));
+route("GET", "/api/tokens", true, async () => {
+  const tokens = db.tokens().map((t) => {
+    let profileName: string | null = null;
+    let profileSlug: string | null = null;
+    if (t.profile_id) {
+      const p = db.profile(String(t.profile_id));
+      if (p) {
+        profileName = p.name;
+        profileSlug = p.slug;
+      }
+    }
+    return { ...t, profile_name: profileName, profile_slug: profileSlug };
+  });
+  return { json: { tokens } };
+});
+
 route("POST", "/api/tokens", true, async (ctx) => {
   const name = String(ctx.body.name ?? "").trim();
   if (!name) return { status: 400, json: { error: "name is required" } };
@@ -442,15 +476,140 @@ route("POST", "/api/tokens", true, async (ctx) => {
   if (scopes.length === 0 || scopes.some((s) => !KNOWN_SCOPES.includes(s))) {
     return { status: 400, json: { error: `scopes must be a non-empty subset of: ${KNOWN_SCOPES.join(", ")}` } };
   }
-  const computerId = ctx.body.computerId ? String(ctx.body.computerId) : null;
+  let computerId = ctx.body.computerId ? String(ctx.body.computerId) : null;
+  const profileId = ctx.body.profileId ? String(ctx.body.profileId) : null;
+  if (profileId) {
+    const prof = db.profile(profileId);
+    if (!prof) return { status: 400, json: { error: "profileId does not exist" } };
+    if (computerId && computerId !== prof.computerId) {
+      return { status: 400, json: { error: "profile does not belong to specified computer" } };
+    }
+    computerId = prof.computerId;
+  }
   if (computerId && !db.computer(computerId)) {
     return { status: 400, json: { error: "computerId does not exist" } };
   }
   const { token, hash } = newMcpToken();
   const id = `tok_${crypto.randomBytes(4).toString("hex")}`;
-  db.insertToken({ id, name, tokenHash: hash, scopes, computerId });
-  db.audit(ctx.user!.username, "token.create", computerId, { tokenId: id, name, scopes });
-  return { status: 201, json: { id, name, scopes, computerId, token } }; // token shown once
+  db.insertToken({ id, name, tokenHash: hash, scopes, computerId, profileId });
+  db.audit(ctx.user!.username, "token.create", computerId, { tokenId: id, name, scopes, profileId });
+  return { status: 201, json: { id, name, scopes, computerId, profileId, token } }; // token shown once
+});
+
+// Settings & Profiles management
+route("GET", "/api/settings", true, async () => {
+  return { json: { settings: db.allSettings() } };
+});
+
+route("POST", "/api/settings", true, async (ctx) => {
+  const settings = ctx.body as Record<string, unknown>;
+  for (const [k, v] of Object.entries(settings)) {
+    db.setSetting(k, String(v));
+  }
+  db.audit(ctx.user!.username, "settings.update", null, { updated: Object.keys(settings) });
+  return { json: { ok: true, settings: db.allSettings() } };
+});
+
+route("POST", "/api/computers/:id/shared", true, async (ctx) => {
+  const row = db.computer(ctx.params.id);
+  if (!row) return { status: 404, json: { error: "computer not found" } };
+  const isShared = ctx.body.isShared !== undefined ? Boolean(ctx.body.isShared) : !row.isShared;
+  db.setComputerShared(row.id, isShared);
+  if (isShared && db.computerProfiles(row.id).length === 0) {
+    db.insertProfile({
+      id: `prof_${crypto.randomBytes(4).toString("hex")}`,
+      computerId: row.id,
+      name: "Default Profile",
+      slug: "default",
+      description: "Default primary profile",
+      color: "#3b82f6",
+      isDefault: true,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+  }
+  db.audit(ctx.user!.username, "computer.shared_mode", row.id, { isShared });
+  return { json: { computer: publicComputer(db.computer(row.id)!) } };
+});
+
+route("GET", "/api/computers/:id/profiles", true, async (ctx) => {
+  const row = db.computer(ctx.params.id);
+  if (!row) return { status: 404, json: { error: "computer not found" } };
+  return { json: { profiles: db.computerProfiles(row.id) } };
+});
+
+route("POST", "/api/computers/:id/profiles", true, async (ctx) => {
+  const row = db.computer(ctx.params.id);
+  if (!row) return { status: 404, json: { error: "computer not found" } };
+  const name = String(ctx.body.name ?? "").trim();
+  if (!name || name.length > 50) return { status: 400, json: { error: "name must be 1..50 characters" } };
+  let slug = String(ctx.body.slug ?? "").trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+  if (!slug) {
+    slug = name.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 20) || "profile";
+  }
+  if (db.profileBySlug(row.id, slug)) {
+    return { status: 409, json: { error: `profile slug "${slug}" already exists on this computer` } };
+  }
+  const existing = db.computerProfiles(row.id);
+  const isDefault = Boolean(ctx.body.isDefault || existing.length === 0);
+  const profId = `prof_${crypto.randomBytes(4).toString("hex")}`;
+  const profile: ProfileRow = {
+    id: profId,
+    computerId: row.id,
+    name,
+    slug,
+    description: String(ctx.body.description ?? "").trim(),
+    color: String(ctx.body.color ?? "#3b82f6"),
+    isDefault,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+  if (isDefault && existing.length > 0) {
+    for (const ex of existing) {
+      if (ex.isDefault) db.updateProfile(ex.id, { isDefault: false });
+    }
+  }
+  db.insertProfile(profile);
+  if (!row.isShared) {
+    db.setComputerShared(row.id, true);
+  }
+  db.audit(ctx.user!.username, "profile.create", row.id, { profileId: profId, name, slug });
+  return { status: 201, json: { profile } };
+});
+
+route("PATCH", "/api/computers/:id/profiles/:profileId", true, async (ctx) => {
+  const row = db.computer(ctx.params.id);
+  if (!row) return { status: 404, json: { error: "computer not found" } };
+  const prof = db.profile(ctx.params.profileId);
+  if (!prof || prof.computerId !== row.id) return { status: 404, json: { error: "profile not found" } };
+  const updates: Record<string, any> = {};
+  if (ctx.body.name !== undefined) updates.name = String(ctx.body.name).trim();
+  if (ctx.body.description !== undefined) updates.description = String(ctx.body.description).trim();
+  if (ctx.body.color !== undefined) updates.color = String(ctx.body.color).trim();
+  if (ctx.body.isDefault !== undefined) updates.isDefault = Boolean(ctx.body.isDefault);
+  db.updateProfile(prof.id, updates);
+  db.audit(ctx.user!.username, "profile.update", row.id, { profileId: prof.id });
+  return { json: { profile: db.profile(prof.id) } };
+});
+
+route("DELETE", "/api/computers/:id/profiles/:profileId", true, async (ctx) => {
+  const row = db.computer(ctx.params.id);
+  if (!row) return { status: 404, json: { error: "computer not found" } };
+  const prof = db.profile(ctx.params.profileId);
+  if (!prof || prof.computerId !== row.id) return { status: 404, json: { error: "profile not found" } };
+  const profiles = db.computerProfiles(row.id);
+  if (profiles.length <= 1) {
+    return { status: 400, json: { error: "cannot delete the only profile on a shared computer" } };
+  }
+  db.deleteProfile(prof.id);
+  if (prof.isDefault) {
+    const remaining = db.computerProfiles(row.id);
+    if (remaining.length > 0) {
+      db.updateProfile(remaining[0].id, { isDefault: true });
+    }
+  }
+  db.audit(ctx.user!.username, "profile.delete", row.id, { profileId: prof.id, name: prof.name });
+  return { json: { ok: true } };
 });
 route("DELETE", "/api/tokens/:id", true, async (ctx) => {
   db.revokeToken(ctx.params.id);
@@ -500,7 +659,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   let body: Record<string, unknown> = {};
-  if (req.method === "POST" || req.method === "DELETE") {
+  if (req.method === "POST" || req.method === "DELETE" || req.method === "PATCH" || req.method === "PUT") {
     try { body = await readBody(req); } catch (e) {
       return send(400, { error: (e as Error).message });
     }

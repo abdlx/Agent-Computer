@@ -21,7 +21,16 @@ import {
   AlertTriangle,
   X,
   ShieldCheck,
-  Key
+  Key,
+  Users,
+  Sliders,
+  Layers,
+  Edit2,
+  Terminal,
+  Globe,
+  RefreshCw,
+  Folder,
+  CheckCircle
 } from "lucide-react";
 import { api, stateColor, timeAgo } from "./api.js";
 
@@ -511,6 +520,16 @@ export function Computers({ navigate, searchQuery = "", onResourcesLoaded }) {
                         <ExternalLink size={14} /> Open Desktop
                       </button>
 
+                      <button
+                        className="dropdown-item"
+                        onClick={() => {
+                          setCardMenuOpen(null);
+                          navigate("#/settings");
+                        }}
+                      >
+                        <Sliders size={14} /> Settings & Profiles
+                      </button>
+
                       {isRunning ? (
                         <button
                           className="dropdown-item"
@@ -548,7 +567,14 @@ export function Computers({ navigate, searchQuery = "", onResourcesLoaded }) {
 
                 {/* Card Body */}
                 <div className="card-body">
-                  <div className="card-name">{c.name}</div>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+                    <div className="card-name">{c.name}</div>
+                    {c.isShared && (
+                      <span className="pill-badge" style={{ background: "rgba(59, 130, 246, 0.12)", color: "var(--accent-blue)", fontSize: "11px", display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                        <Users size={11} /> Shared ({c.profileCount ?? c.profiles?.length ?? 1})
+                      </span>
+                    )}
+                  </div>
                   <div className="card-os-tag">Debian 13 · XFCE</div>
 
                   {/* 3 Metric Rows: CPU, RAM, Disk */}
@@ -768,6 +794,7 @@ function CreateModal({ close, done, resources }) {
   const [name, setName] = useState("");
   const [cpuMillis, setCpu] = useState(1000);
   const [memoryMb, setMem] = useState(2048);
+  const [isShared, setIsShared] = useState(false);
   const diskGb = 20;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -783,6 +810,7 @@ function CreateModal({ close, done, resources }) {
         cpuMillis: Number(cpuMillis),
         memoryMb: Number(memoryMb),
         diskGb: Number(diskGb),
+        isShared,
       });
       if (r.limitsEnforced === false) {
         setNote("Created. Note: this host kernel cannot enforce CPU/RAM limits, so they are recorded but not restricted.");
@@ -878,6 +906,23 @@ function CreateModal({ close, done, resources }) {
             <option disabled={!resources || resources.memoryHeadroomMb < 4096} value={4096}>4 GB RAM</option>
             <option disabled={!resources || resources.memoryHeadroomMb < 8192} value={8192}>8 GB RAM</option>
           </select>
+        </div>
+
+        <div className="form-group" style={{ marginTop: "14px" }}>
+          <label style={{ display: "flex", alignItems: "flex-start", gap: "10px", cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={isShared}
+              onChange={(e) => setIsShared(e.target.checked)}
+              style={{ marginTop: "3px", width: "16px", height: "16px", cursor: "pointer" }}
+            />
+            <div>
+              <span style={{ fontWeight: 600 }}>Enable Shared Computer Mode</span>
+              <div style={{ fontSize: "11.5px", color: "var(--text-muted)" }}>
+                Allows multiple AI agents to use this machine concurrently with isolated browser profiles and workspaces.
+              </div>
+            </div>
+          </label>
         </div>
 
         <div style={{ fontSize: "12px", color: "var(--text-muted)", marginTop: "6px" }}>
@@ -981,6 +1026,7 @@ export function Agents() {
     name: "",
     scopes: ["read", "write", "browser", "files"],
     computerId: "",
+    profileId: "",
   });
 
   const load = async () => {
@@ -1011,6 +1057,7 @@ export function Agents() {
         name: form.name,
         scopes: form.scopes,
         computerId: form.computerId || null,
+        profileId: form.profileId || null,
       });
       setCreated(r);
       load();
@@ -1111,16 +1158,42 @@ export function Agents() {
           <select
             className="form-select"
             value={form.computerId}
-            onChange={(e) => setForm({ ...form, computerId: e.target.value })}
+            onChange={(e) => setForm({ ...form, computerId: e.target.value, profileId: "" })}
           >
             <option value="">Any Computer in Fleet</option>
             {computers.map((c) => (
               <option key={c.id} value={c.id}>
-                {c.name}
+                {c.name} {c.isShared ? "(Shared Machine)" : ""}
               </option>
             ))}
           </select>
         </div>
+
+        {(() => {
+          const selected = computers.find((c) => c.id === form.computerId);
+          const profs = selected?.profiles || [];
+          if (profs.length === 0) return null;
+          return (
+            <div className="form-group">
+              <label>Agent Profile (Shared Machine)</label>
+              <select
+                className="form-select"
+                value={form.profileId}
+                onChange={(e) => setForm({ ...form, profileId: e.target.value })}
+              >
+                <option value="">Any / Default Profile</option>
+                {profs.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({p.slug}) {p.isDefault ? "— Default" : ""}
+                  </option>
+                ))}
+              </select>
+              <span style={{ fontSize: "11.5px", color: "var(--text-muted)", marginTop: "4px", display: "block" }}>
+                Locks this agent's session to its own isolated browser profile and workspace directory.
+              </span>
+            </div>
+          );
+        })()}
 
         <button className="btn-modal-primary" style={{ marginTop: "10px" }}>
           Generate Token
@@ -1179,7 +1252,12 @@ export function Agents() {
                       </div>
                     </td>
                     <td style={{ color: "var(--text-secondary)" }}>
-                      {t.computer_id ? computers.find((c) => c.id === t.computer_id)?.name || t.computer_id : "Any"}
+                      <div>{t.computer_id ? computers.find((c) => c.id === t.computer_id)?.name || t.computer_id : "Any"}</div>
+                      {t.profile_name && (
+                        <span className="pill-badge" style={{ background: "rgba(59, 130, 246, 0.12)", color: "var(--accent-blue)", fontSize: "11px", marginTop: "3px", display: "inline-block" }}>
+                          Profile: {t.profile_name}
+                        </span>
+                      )}
                     </td>
                     <td style={{ color: "var(--text-muted)", fontSize: "12.5px" }}>
                       {t.last_used_at ? timeAgo(t.last_used_at) : "Never"}
@@ -1319,6 +1397,726 @@ export function Audit() {
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+// =========================================================================
+// Settings & Shared Computer Profiles Page
+// =========================================================================
+export function Settings({ navigate }) {
+  const [tab, setTab] = useState("shared");
+  const [computers, setComputers] = useState([]);
+  const [selectedCompId, setSelectedCompId] = useState("");
+  const [profiles, setProfiles] = useState([]);
+  const [generalSettings, setGeneralSettings] = useState({
+    idleTimeoutS: "300",
+    defaultEngine: "camoufox",
+  });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [successMsg, setSuccessMsg] = useState("");
+
+  // Modals
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [editingProfile, setEditingProfile] = useState(null);
+  const [connectProfile, setConnectProfile] = useState(null);
+  const [tokenResult, setTokenResult] = useState(null);
+  const [tokenCopied, setTokenCopied] = useState(false);
+
+  // Form states
+  const [profileForm, setProfileForm] = useState({
+    name: "",
+    slug: "",
+    description: "",
+    color: "#3b82f6",
+    isDefault: false,
+  });
+
+  const [agentForm, setAgentForm] = useState({
+    name: "",
+    scopes: ["read", "write", "browser", "files"],
+  });
+
+  const loadData = async () => {
+    try {
+      setLoading(true);
+      const [compRes, setRes] = await Promise.all([
+        api("GET", "/api/computers"),
+        api("GET", "/api/settings").catch(() => ({ settings: {} })),
+      ]);
+      setComputers(compRes.computers);
+      if (setRes.settings) {
+        setGeneralSettings((prev) => ({ ...prev, ...setRes.settings }));
+      }
+      if (compRes.computers.length > 0) {
+        const current = compRes.computers.find((c) => c.id === selectedCompId) || compRes.computers[0];
+        setSelectedCompId(current.id);
+        await loadProfiles(current.id);
+      }
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadProfiles = async (compId) => {
+    if (!compId) return;
+    try {
+      const res = await api("GET", `/api/computers/${compId}/profiles`);
+      setProfiles(res.profiles || []);
+    } catch {
+      setProfiles([]);
+    }
+  };
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  const handleSelectComputer = async (id) => {
+    setSelectedCompId(id);
+    await loadProfiles(id);
+  };
+
+  const selectedComp = computers.find((c) => c.id === selectedCompId);
+
+  const toggleSharedMode = async () => {
+    if (!selectedComp) return;
+    setError("");
+    try {
+      const res = await api("POST", `/api/computers/${selectedComp.id}/shared`, {
+        isShared: !selectedComp.isShared,
+      });
+      setSuccessMsg(`Shared mode ${res.computer.isShared ? "enabled" : "disabled"} for ${selectedComp.name}`);
+      setTimeout(() => setSuccessMsg(""), 3000);
+      await loadData();
+      await loadProfiles(selectedComp.id);
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  const handleSaveProfile = async (e) => {
+    e.preventDefault();
+    setError("");
+    try {
+      if (editingProfile) {
+        await api("PATCH", `/api/computers/${selectedComp.id}/profiles/${editingProfile.id}`, {
+          name: profileForm.name,
+          description: profileForm.description,
+          color: profileForm.color,
+          isDefault: profileForm.isDefault,
+        });
+        setEditingProfile(null);
+      } else {
+        await api("POST", `/api/computers/${selectedComp.id}/profiles`, {
+          name: profileForm.name,
+          slug: profileForm.slug || undefined,
+          description: profileForm.description,
+          color: profileForm.color,
+          isDefault: profileForm.isDefault,
+        });
+        setShowAddModal(false);
+      }
+      setSuccessMsg("Profile saved successfully");
+      setTimeout(() => setSuccessMsg(""), 3000);
+      await loadProfiles(selectedComp.id);
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  const handleDeleteProfile = async (prof) => {
+    if (!confirm(`Are you sure you want to delete profile "${prof.name}"?`)) return;
+    setError("");
+    try {
+      await api("DELETE", `/api/computers/${selectedComp.id}/profiles/${prof.id}`);
+      setSuccessMsg(`Profile "${prof.name}" removed`);
+      setTimeout(() => setSuccessMsg(""), 3000);
+      await loadProfiles(selectedComp.id);
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  const handleOpenAdd = () => {
+    setProfileForm({
+      name: "",
+      slug: "",
+      description: "",
+      color: "#3b82f6",
+      isDefault: profiles.length === 0,
+    });
+    setEditingProfile(null);
+    setShowAddModal(true);
+  };
+
+  const handleOpenEdit = (p) => {
+    setEditingProfile(p);
+    setProfileForm({
+      name: p.name,
+      slug: p.slug,
+      description: p.description || "",
+      color: p.color || "#3b82f6",
+      isDefault: p.isDefault,
+    });
+    setShowAddModal(true);
+  };
+
+  const handleOpenConnect = (p) => {
+    setConnectProfile(p);
+    setAgentForm({
+      name: `${p.name} Agent`,
+      scopes: ["read", "write", "browser", "files"],
+    });
+    setTokenResult(null);
+  };
+
+  const handleCreateAgentToken = async (e) => {
+    e.preventDefault();
+    setError("");
+    try {
+      const res = await api("POST", "/api/tokens", {
+        name: agentForm.name,
+        scopes: agentForm.scopes,
+        computerId: selectedComp.id,
+        profileId: connectProfile.id,
+      });
+      setTokenResult(res);
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  const handleSaveGeneralSettings = async (e) => {
+    e.preventDefault();
+    setError("");
+    try {
+      await api("POST", "/api/settings", generalSettings);
+      setSuccessMsg("Settings updated successfully");
+      setTimeout(() => setSuccessMsg(""), 3000);
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  const mcpUrl = `${location.origin}/mcp`;
+  const snippet = tokenResult
+    ? JSON.stringify(
+        {
+          mcpServers: {
+            "agent-computer": {
+              url: mcpUrl,
+              headers: { Authorization: `Bearer ${tokenResult.token}` },
+            },
+          },
+        },
+        null,
+        2
+      )
+    : "";
+
+  const copyConfig = () => {
+    navigator.clipboard?.writeText(snippet);
+    setTokenCopied(true);
+    setTimeout(() => setTokenCopied(false), 2000);
+  };
+
+  const PRESET_COLORS = ["#3b82f6", "#10b981", "#8b5cf6", "#f59e0b", "#ef4444", "#06b6d4"];
+
+  return (
+    <div className="page-container">
+      <div className="page-title-row">
+        <div className="page-title-group">
+          <h1>Platform Settings</h1>
+          <div className="page-subtitle">
+            Configure shared computers, agent profiles, and platform environment options.
+          </div>
+        </div>
+      </div>
+
+      {error && <div className="alert-error">{error}</div>}
+      {successMsg && (
+        <div className="alert-error" style={{ background: "#ecfdf5", borderColor: "#a7f3d0", color: "#065f46" }}>
+          {successMsg}
+        </div>
+      )}
+
+      {/* Tabs */}
+      <div className="settings-tabs">
+        <button
+          className={`settings-tab-btn ${tab === "shared" ? "active" : ""}`}
+          onClick={() => setTab("shared")}
+        >
+          <Users size={16} /> Shared Computers & Profiles
+        </button>
+        <button
+          className={`settings-tab-btn ${tab === "general" ? "active" : ""}`}
+          onClick={() => setTab("general")}
+        >
+          <Sliders size={16} /> General Preferences
+        </button>
+      </div>
+
+      {tab === "shared" && (
+        <div>
+          {/* Architecture Concept Banner */}
+          <div className="shared-banner">
+            <div style={{ color: "var(--accent-blue)", marginTop: "2px" }}>
+              <Layers size={24} />
+            </div>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: "15px", color: "var(--text-primary)" }}>
+                Single Shared Computer Architecture
+              </div>
+              <div style={{ fontSize: "13px", color: "var(--text-secondary)", marginTop: "4px", lineHeight: "1.5" }}>
+                Instead of running multiple isolated Docker containers (consuming 16–32 GB host RAM),
+                a <strong>Shared Computer</strong> runs a single persistent Linux instance. Multiple agents
+                (e.g. Dex, Kai, Milo, Ezra) each operate under their own isolated profile with separate
+                browser cookies, logins, and workspaces.
+              </div>
+            </div>
+          </div>
+
+          {/* Computer Selection and Status Card */}
+          <div className="panel-card">
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "16px" }}>
+              <div>
+                <h3>Select Target Computer</h3>
+                <div style={{ fontSize: "13px", color: "var(--text-secondary)" }}>
+                  Choose which virtual machine to manage profiles and multi-agent sharing on.
+                </div>
+              </div>
+              {selectedComp && (
+                <button
+                  className={selectedComp.isShared ? "btn-modal-cancel" : "btn-modal-primary"}
+                  onClick={toggleSharedMode}
+                  style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}
+                >
+                  <Users size={15} />
+                  <span>{selectedComp.isShared ? "Disable Shared Mode" : "Enable Shared Mode"}</span>
+                </button>
+              )}
+            </div>
+
+            {computers.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "30px", color: "var(--text-muted)" }}>
+                No computers created yet. Head to the Computers tab to create one first.
+              </div>
+            ) : (
+              <div style={{ display: "flex", gap: "12px", marginTop: "18px", flexWrap: "wrap" }}>
+                {computers.map((c) => {
+                  const isSelected = c.id === selectedCompId;
+                  return (
+                    <div
+                      key={c.id}
+                      onClick={() => handleSelectComputer(c.id)}
+                      style={{
+                        padding: "12px 18px",
+                        borderRadius: "12px",
+                        border: isSelected ? "2px solid var(--accent-blue)" : "1px solid var(--border-card)",
+                        background: isSelected ? "rgba(59, 130, 246, 0.05)" : "var(--bg-card)",
+                        cursor: "pointer",
+                        minWidth: "220px",
+                        transition: "all 0.15s ease",
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                        <div style={{ fontWeight: 700, fontSize: "14px", color: "var(--text-primary)" }}>{c.name}</div>
+                        <span
+                          style={{
+                            width: "8px",
+                            height: "8px",
+                            borderRadius: "50%",
+                            background: c.state === "ready" ? "#10b981" : "#94a3b8",
+                          }}
+                        />
+                      </div>
+                      <div style={{ display: "flex", gap: "8px", marginTop: "8px", alignItems: "center" }}>
+                        {c.isShared ? (
+                          <span className="pill-badge" style={{ background: "rgba(59, 130, 246, 0.12)", color: "var(--accent-blue)", fontSize: "10.5px" }}>
+                            Shared ({c.profileCount ?? c.profiles?.length ?? 1} profiles)
+                          </span>
+                        ) : (
+                          <span className="pill-badge" style={{ background: "var(--bg-app)", color: "var(--text-muted)", fontSize: "10.5px" }}>
+                            Dedicated (1 agent)
+                          </span>
+                        )}
+                        <span style={{ fontSize: "11.5px", color: "var(--text-muted)" }}>
+                          {c.memoryMb} MB
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Profiles Section for Selected Computer */}
+          {selectedComp && (
+            <div className="panel-card">
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+                <div>
+                  <h3>Agent Profiles on {selectedComp.name}</h3>
+                  <div style={{ fontSize: "13px", color: "var(--text-secondary)" }}>
+                    Each profile maintains distinct browser sessions, cookies, and local workspace paths.
+                  </div>
+                </div>
+                <button
+                  className="btn-modal-primary"
+                  onClick={handleOpenAdd}
+                  style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}
+                >
+                  <Plus size={15} /> Add Profile
+                </button>
+              </div>
+
+              {profiles.length === 0 ? (
+                <div style={{ textAlign: "center", padding: "40px 20px", color: "var(--text-muted)", background: "var(--bg-app)", borderRadius: "12px" }}>
+                  <Users size={32} style={{ opacity: 0.4, marginBottom: "8px" }} />
+                  <div>No profiles defined yet.</div>
+                  <div style={{ fontSize: "12.5px", marginTop: "4px" }}>Click "Add Profile" or enable Shared Mode to generate the default profile.</div>
+                </div>
+              ) : (
+                <div className="computers-table-wrap" style={{ border: "none" }}>
+                  <table className="computers-table">
+                    <thead>
+                      <tr>
+                        <th>Agent / Profile</th>
+                        <th>Slug & Paths</th>
+                        <th>Description</th>
+                        <th>Type</th>
+                        <th style={{ textAlign: "right" }}>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {profiles.map((p) => {
+                        const initials = p.name.slice(0, 2).toUpperCase();
+                        return (
+                          <tr key={p.id}>
+                            <td>
+                              <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                                <div
+                                  className="profile-avatar-circle"
+                                  style={{ background: p.color || "#3b82f6" }}
+                                >
+                                  {initials}
+                                </div>
+                                <div>
+                                  <div style={{ fontWeight: 700, fontSize: "14px" }}>{p.name}</div>
+                                  <div style={{ fontSize: "11.5px", color: "var(--text-muted)", fontFamily: "monospace" }}>
+                                    ID: {p.id}
+                                  </div>
+                                </div>
+                              </div>
+                            </td>
+                            <td>
+                              <div style={{ fontSize: "12.5px", fontFamily: "monospace", color: "var(--text-primary)" }}>
+                                profile: <strong>{p.slug}</strong>
+                              </div>
+                              <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "2px" }}>
+                                Browser: ~/.camoufox-profiles/{p.slug}
+                              </div>
+                              <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>
+                                Workspace: ~/profiles/{p.slug}
+                              </div>
+                            </td>
+                            <td style={{ color: "var(--text-secondary)", fontSize: "12.5px", maxWidth: "250px" }}>
+                              {p.description || "—"}
+                            </td>
+                            <td>
+                              {p.isDefault ? (
+                                <span className="pill-badge" style={{ background: "#dcfce7", color: "#15803d" }}>
+                                  Default Profile
+                                </span>
+                              ) : (
+                                <span className="pill-badge" style={{ background: "var(--bg-app)", color: "var(--text-muted)" }}>
+                                  Sub-profile
+                                </span>
+                              )}
+                            </td>
+                            <td style={{ textAlign: "right" }}>
+                              <div style={{ display: "inline-flex", gap: "6px" }}>
+                                <button
+                                  className="btn-modal-primary"
+                                  style={{ padding: "5px 10px", fontSize: "12px" }}
+                                  onClick={() => handleOpenConnect(p)}
+                                  title="Generate MCP token bound to this profile"
+                                >
+                                  <Key size={13} style={{ marginRight: "4px" }} /> Connect Agent
+                                </button>
+                                <button
+                                  className="btn-modal-cancel"
+                                  style={{ padding: "5px 10px", fontSize: "12px" }}
+                                  onClick={() => handleOpenEdit(p)}
+                                  title="Edit profile details"
+                                >
+                                  <Edit2 size={13} />
+                                </button>
+                                <button
+                                  className="btn-modal-cancel"
+                                  style={{ padding: "5px 10px", fontSize: "12px", color: "#ef4444" }}
+                                  onClick={() => handleDeleteProfile(p)}
+                                  disabled={profiles.length <= 1}
+                                  title={profiles.length <= 1 ? "Cannot delete the only profile" : "Delete profile"}
+                                >
+                                  <Trash2 size={13} />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab === "general" && (
+        <form className="panel-card" onSubmit={handleSaveGeneralSettings}>
+          <h3>System & Automation Preferences</h3>
+          <p style={{ fontSize: "13px", color: "var(--text-secondary)", marginBottom: "16px" }}>
+            Global lifecycle defaults and guest container settings.
+          </p>
+
+          <div className="form-group">
+            <label>Default Computer Idle Sleep Timeout (seconds)</label>
+            <input
+              type="number"
+              className="form-input"
+              value={generalSettings.idleTimeoutS}
+              onChange={(e) => setGeneralSettings({ ...generalSettings, idleTimeoutS: e.target.value })}
+              min={30}
+              max={3600}
+              required
+            />
+            <span style={{ fontSize: "12px", color: "var(--text-muted)", marginTop: "4px", display: "block" }}>
+              Time before an inactive machine with no active agent leases gracefully stops to preserve host RAM.
+            </span>
+          </div>
+
+          <div className="form-group">
+            <label>Default Guest Browser Engine</label>
+            <select
+              className="form-select"
+              value={generalSettings.defaultEngine}
+              onChange={(e) => setGeneralSettings({ ...generalSettings, defaultEngine: e.target.value })}
+            >
+              <option value="camoufox">Camoufox (Anti-detection stealth Firefox)</option>
+              <option value="chromium">Chromium</option>
+            </select>
+          </div>
+
+          <button className="btn-modal-primary" style={{ marginTop: "14px" }}>
+            Save Preferences
+          </button>
+        </form>
+      )}
+
+      {/* Add / Edit Profile Modal */}
+      {showAddModal && (
+        <div className="modal-backdrop" onClick={() => setShowAddModal(false)}>
+          <form className="modal-box" onClick={(e) => e.stopPropagation()} onSubmit={handleSaveProfile}>
+            <div className="modal-header">
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <Users size={20} color="var(--accent-blue)" />
+                <h3>{editingProfile ? "Edit Profile" : "Add Profile to Shared Machine"}</h3>
+              </div>
+              <button type="button" className="modal-close-btn" onClick={() => setShowAddModal(false)}>
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="form-group">
+              <label>Profile Display Name</label>
+              <input
+                className="form-input"
+                value={profileForm.name}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  const autoSlug = val.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+                  setProfileForm({
+                    ...profileForm,
+                    name: val,
+                    slug: editingProfile ? profileForm.slug : autoSlug,
+                  });
+                }}
+                placeholder="e.g. Kai (Social) or Dex (Dev)"
+                required
+                autoFocus
+              />
+            </div>
+
+            <div className="form-group">
+              <label>Slug (Filesystem & Browser directory identifier)</label>
+              <input
+                className="form-input"
+                value={profileForm.slug}
+                onChange={(e) => setProfileForm({ ...profileForm, slug: e.target.value.toLowerCase().replace(/[^a-z0-9_-]+/g, "-") })}
+                placeholder="e.g. kai or dex"
+                disabled={Boolean(editingProfile)}
+                required
+              />
+            </div>
+
+            <div className="form-group">
+              <label>Role / Description</label>
+              <input
+                className="form-input"
+                value={profileForm.description}
+                onChange={(e) => setProfileForm({ ...profileForm, description: e.target.value })}
+                placeholder="e.g. Social media automation & content agent"
+              />
+            </div>
+
+            <div className="form-group">
+              <label>Badge Color Tag</label>
+              <div style={{ display: "flex", gap: "8px", marginTop: "6px" }}>
+                {PRESET_COLORS.map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    className={`color-swatch-btn ${profileForm.color === c ? "selected" : ""}`}
+                    style={{ background: c }}
+                    onClick={() => setProfileForm({ ...profileForm, color: c })}
+                  />
+                ))}
+              </div>
+            </div>
+
+            <div className="form-group" style={{ marginTop: "12px" }}>
+              <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={profileForm.isDefault}
+                  onChange={(e) => setProfileForm({ ...profileForm, isDefault: e.target.checked })}
+                />
+                <span style={{ fontSize: "13px", fontWeight: 600 }}>Set as default primary profile</span>
+              </label>
+            </div>
+
+            <div className="modal-actions-row">
+              <button type="button" className="btn-modal-cancel" onClick={() => setShowAddModal(false)}>
+                Cancel
+              </button>
+              <button type="submit" className="btn-modal-primary">
+                {editingProfile ? "Update Profile" : "Create Profile"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Connect Profile Agent Quick Modal */}
+      {connectProfile && (
+        <div className="modal-backdrop" onClick={() => setConnectProfile(null)}>
+          <div className="modal-box" onClick={(e) => e.stopPropagation()} style={{ maxWidth: "560px" }}>
+            <div className="modal-header">
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <Key size={20} color="var(--accent-blue)" />
+                <h3>Connect Agent for {connectProfile.name}</h3>
+              </div>
+              <button type="button" className="modal-close-btn" onClick={() => setConnectProfile(null)}>
+                <X size={18} />
+              </button>
+            </div>
+
+            {!tokenResult ? (
+              <form onSubmit={handleCreateAgentToken}>
+                <p style={{ fontSize: "13px", color: "var(--text-secondary)", marginBottom: "14px" }}>
+                  Generate an MCP access token locked directly to computer <strong>{selectedComp.name}</strong> and
+                  profile <strong>{connectProfile.name}</strong> ({connectProfile.slug}).
+                </p>
+
+                <div className="form-group">
+                  <label>Agent / Client Name</label>
+                  <input
+                    className="form-input"
+                    value={agentForm.name}
+                    onChange={(e) => setAgentForm({ ...agentForm, name: e.target.value })}
+                    required
+                    autoFocus
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>Capabilities (Scopes)</label>
+                  <div className="scopes-grid">
+                    {[
+                      { id: "read", desc: "Screenshot & computer status" },
+                      { id: "write", desc: "Mouse/keyboard input & terminal" },
+                      { id: "browser", desc: "Automate isolated browser instance" },
+                      { id: "files", desc: "Workspace file access" },
+                    ].map(({ id, desc }) => (
+                      <label key={id} className="scope-checkbox-label">
+                        <input
+                          type="checkbox"
+                          checked={agentForm.scopes.includes(id)}
+                          onChange={() => {
+                            setAgentForm((prev) => ({
+                              ...prev,
+                              scopes: prev.scopes.includes(id)
+                                ? prev.scopes.filter((s) => s !== id)
+                                : [...prev.scopes, id],
+                            }));
+                          }}
+                        />
+                        <div>
+                          <div style={{ fontWeight: 600, textTransform: "capitalize" }}>{id}</div>
+                          <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>{desc}</div>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="modal-actions-row">
+                  <button type="button" className="btn-modal-cancel" onClick={() => setConnectProfile(null)}>
+                    Cancel
+                  </button>
+                  <button type="submit" className="btn-modal-primary">
+                    Generate Profile Token
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <div>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "#10b981", marginBottom: "8px" }}>
+                  <CheckCircle size={18} />
+                  <span style={{ fontWeight: 700 }}>Token Created Successfully</span>
+                </div>
+                <code className="code-token-box">{tokenResult.token}</code>
+
+                <p style={{ fontSize: "13px", color: "var(--text-secondary)", marginTop: "12px" }}>
+                  Add this MCP server block to your Hermes <code>config.yaml</code> or Claude Desktop config:
+                </p>
+                <pre className="code-snippet-box">{snippet}</pre>
+
+                <div className="modal-actions-row">
+                  <button
+                    className="btn-modal-primary"
+                    onClick={copyConfig}
+                    style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}
+                  >
+                    {tokenCopied ? <Check size={14} /> : <Copy size={14} />}
+                    <span>{tokenCopied ? "Copied!" : "Copy Configuration"}</span>
+                  </button>
+                  <button className="btn-modal-cancel" onClick={() => setConnectProfile(null)}>
+                    Done
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

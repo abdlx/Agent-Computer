@@ -3,6 +3,7 @@ import {
   Monitor,
   Share2,
   ShieldCheck,
+  Sliders,
   LogOut,
   Search,
   Moon,
@@ -14,7 +15,7 @@ import {
   HardDrive
 } from "lucide-react";
 import { api } from "./api.js";
-import { Computers, Agents, Audit } from "./pages.jsx";
+import { Computers, Agents, Audit, Settings as SettingsPage } from "./pages.jsx";
 import Workspace from "./Workspace.jsx";
 
 function useHashRoute() {
@@ -187,6 +188,8 @@ export default function App() {
     page = <Workspace computerId={hash.slice("#/workspace/".length)} navigate={navigate} />;
   } else if (hash.startsWith("#/agents")) {
     page = <Agents />;
+  } else if (hash.startsWith("#/settings")) {
+    page = <SettingsPage navigate={navigate} />;
   } else if (hash.startsWith("#/audit")) {
     page = <Audit />;
   } else {
@@ -195,13 +198,14 @@ export default function App() {
 
   const isComputersActive = hash.startsWith("#/computers") || hash.startsWith("#/workspace");
   const isConnectActive = hash.startsWith("#/agents");
+  const isSettingsActive = hash.startsWith("#/settings");
   const isAuditActive = hash.startsWith("#/audit");
 
   const isHostOperational = hostResources ? hostResources.allowed !== false : true;
 
   return (
     <div className="app-shell">
-      {/* Sidebar - strictly restricted to Computers, Connect, Audit, Sign Out */}
+      {/* Sidebar - Computers, Connect, Settings, Audit, Sign Out */}
       <aside className="sidebar">
         <div className="sidebar-top">
           {/* Brand Logo */}
@@ -210,7 +214,7 @@ export default function App() {
             <span className="brand-title">Agent Computer</span>
           </div>
 
-          {/* Navigation Items (Only computers, connect, audit, signout) */}
+          {/* Navigation Items */}
           <nav className="sidebar-nav">
             <button
               className={`nav-item ${isComputersActive ? "active" : ""}`}
@@ -232,6 +236,17 @@ export default function App() {
                 <Share2 size={18} strokeWidth={isConnectActive ? 2.3 : 1.9} />
               </div>
               <span>Connect</span>
+            </button>
+
+            <button
+              className={`nav-item ${isSettingsActive ? "active" : ""}`}
+              onClick={() => navigate("#/settings")}
+              id="nav-settings"
+            >
+              <div className="nav-icon">
+                <Sliders size={18} strokeWidth={isSettingsActive ? 2.3 : 1.9} />
+              </div>
+              <span>Settings</span>
             </button>
 
             <button

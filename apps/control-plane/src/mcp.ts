@@ -33,6 +33,8 @@ interface TokenInfo {
   name: string;
   scopes: string[];
   computerId: string | null;
+  profileId: string | null;
+  profileSlug: string | null;
 }
 
 interface CallCtx {
@@ -45,6 +47,16 @@ interface CallCtx {
 
 function hasScope(token: TokenInfo, scope: string): boolean {
   return token.scopes.includes("admin") || token.scopes.includes(scope);
+}
+
+function effectiveProfile(ctx: CallCtx, argProfile?: unknown): string {
+  if (argProfile && typeof argProfile === "string" && argProfile.trim()) {
+    return argProfile.trim();
+  }
+  if (ctx.token.profileSlug) {
+    return ctx.token.profileSlug;
+  }
+  return "default";
 }
 
 function resolveComputer(ctx: CallCtx, arg: unknown): ComputerRow {
@@ -105,6 +117,7 @@ interface ToolDef {
 
 const COMPUTER_ARG = {
   computer: { type: "string", description: "Computer id or name. Optional when the token is bound to one computer or only one exists." },
+  profile: { type: "string", description: "Agent profile name (e.g. 'dex', 'kai', 'milo'). Optional, defaults to the profile bound to your token or 'default'." },
 };
 const obj = (props: Record<string, unknown>, required: string[] = []): Record<string, unknown> => ({
   type: "object", properties: props, required, additionalProperties: false,
@@ -306,49 +319,55 @@ export const TOOLS: ToolDef[] = [
     name: "browser_start", scope: "browser",
     description: "Start the persistent browser (Camoufox) on the desktop. The profile (cookies, logins) persists across restarts and sleeps.",
     inputSchema: obj({ ...COMPUTER_ARG }),
-    run: async (ctx, args) => text(await guest(ctx, resolveComputer(ctx, args.computer), "POST", "/browser/start", { engine: "camoufox" }, 180000)),
+    run: async (ctx, args) => text(await guest(ctx, resolveComputer(ctx, args.computer), "POST", "/browser/start", { engine: "camoufox", profile: effectiveProfile(ctx, args.profile) }, 180000)),
   },
   {
     name: "browser_navigate", scope: "browser",
     description: "Navigate the browser to a URL.",
     inputSchema: obj({ ...COMPUTER_ARG, url: { type: "string" } }, ["url"]),
-    run: async (ctx, args) => text(await guest(ctx, resolveComputer(ctx, args.computer), "POST", "/browser/navigate", { url: args.url }, 120000)),
+    run: async (ctx, args) => text(await guest(ctx, resolveComputer(ctx, args.computer), "POST", "/browser/navigate", { url: args.url, profile: effectiveProfile(ctx, args.profile) }, 120000)),
   },
   {
     name: "browser_snapshot", scope: "browser",
     description: "Accessibility snapshot of the page: interactive elements with refs (e1, e2, …) to use with browser_click / browser_fill.",
     inputSchema: obj({ ...COMPUTER_ARG }),
-    run: async (ctx, args) => text(await guest(ctx, resolveComputer(ctx, args.computer), "GET", "/browser/snapshot")),
+    run: async (ctx, args) => {
+      const prof = effectiveProfile(ctx, args.profile);
+      return text(await guest(ctx, resolveComputer(ctx, args.computer), "GET", `/browser/snapshot?profile=${encodeURIComponent(prof)}`));
+    },
   },
   {
     name: "browser_click", scope: "browser",
     description: "Click an element by its snapshot ref.",
     inputSchema: obj({ ...COMPUTER_ARG, ref: { type: "string" } }, ["ref"]),
-    run: async (ctx, args) => text(await guest(ctx, resolveComputer(ctx, args.computer), "POST", "/browser/click", { ref: args.ref }, 60000)),
+    run: async (ctx, args) => text(await guest(ctx, resolveComputer(ctx, args.computer), "POST", "/browser/click", { ref: args.ref, profile: effectiveProfile(ctx, args.profile) }, 60000)),
   },
   {
     name: "browser_fill", scope: "browser",
     description: "Fill a text field (by snapshot ref) with text.",
     inputSchema: obj({ ...COMPUTER_ARG, ref: { type: "string" }, text: { type: "string" } }, ["ref", "text"]),
-    run: async (ctx, args) => text(await guest(ctx, resolveComputer(ctx, args.computer), "POST", "/browser/fill", { ref: args.ref, text: args.text }, 60000)),
+    run: async (ctx, args) => text(await guest(ctx, resolveComputer(ctx, args.computer), "POST", "/browser/fill", { ref: args.ref, text: args.text, profile: effectiveProfile(ctx, args.profile) }, 60000)),
   },
   {
     name: "browser_press", scope: "browser",
     description: "Press a key in the page, e.g. 'Enter', 'Tab', 'Escape'.",
     inputSchema: obj({ ...COMPUTER_ARG, key: { type: "string" } }, ["key"]),
-    run: async (ctx, args) => text(await guest(ctx, resolveComputer(ctx, args.computer), "POST", "/browser/press", { key: args.key }, 60000)),
+    run: async (ctx, args) => text(await guest(ctx, resolveComputer(ctx, args.computer), "POST", "/browser/press", { key: args.key, profile: effectiveProfile(ctx, args.profile) }, 60000)),
   },
   {
     name: "browser_content", scope: "browser",
     description: "The page's visible text content and title.",
     inputSchema: obj({ ...COMPUTER_ARG }),
-    run: async (ctx, args) => text(await guest(ctx, resolveComputer(ctx, args.computer), "GET", "/browser/content")),
+    run: async (ctx, args) => {
+      const prof = effectiveProfile(ctx, args.profile);
+      return text(await guest(ctx, resolveComputer(ctx, args.computer), "GET", `/browser/content?profile=${encodeURIComponent(prof)}`));
+    },
   },
   {
     name: "browser_close", scope: "browser",
     description: "Close the browser (profile state flushes to disk).",
     inputSchema: obj({ ...COMPUTER_ARG }),
-    run: async (ctx, args) => text(await guest(ctx, resolveComputer(ctx, args.computer), "POST", "/browser/close", {}, 60000)),
+    run: async (ctx, args) => text(await guest(ctx, resolveComputer(ctx, args.computer), "POST", "/browser/close", { profile: effectiveProfile(ctx, args.profile) }, 60000)),
   },
   // ---- files ---------------------------------------------------------------------
   {
@@ -388,7 +407,41 @@ export const TOOLS: ToolDef[] = [
     description: "Run a shell command on the computer (as its user, in a login shell) and return stdout/stderr/exit code. Long-running processes should use nohup/setsid and return.",
     inputSchema: obj({ ...COMPUTER_ARG, command: { type: "string" }, timeout_s: { type: "number" } }, ["command"]),
     run: async (ctx, args) => text(await guest(ctx, resolveComputer(ctx, args.computer), "POST", "/exec",
-      { command: args.command, timeout_s: args.timeout_s ?? 30 }, 135000)),
+      { command: args.command, timeout_s: args.timeout_s ?? 30, profile: effectiveProfile(ctx, args.profile) }, 135000)),
+  },
+  // ---- profiles ---------------------------------------------------------------------
+  {
+    name: "profile_list", scope: "read",
+    description: "List available agent profiles under this computer.",
+    inputSchema: obj({ ...COMPUTER_ARG }),
+    run: async (ctx, args) => {
+      const row = resolveComputer(ctx, args.computer);
+      const profiles = ctx.db.computerProfiles(row.id).map((p) => ({
+        id: p.id, name: p.name, slug: p.slug, description: p.description,
+        isDefault: p.isDefault,
+      }));
+      return text({
+        computerId: row.id,
+        computerName: row.name,
+        isShared: row.isShared,
+        currentProfile: ctx.token.profileSlug ?? "default",
+        profiles: profiles.length > 0 ? profiles : [{ id: "default", name: "Default Profile", slug: "default", isDefault: true }],
+      });
+    },
+  },
+  {
+    name: "profile_current", scope: "read",
+    description: "Get the profile and workspace context this agent session is operating under.",
+    inputSchema: obj({}),
+    run: async (ctx) => {
+      return text({
+        agentName: ctx.token.name,
+        computerId: ctx.token.computerId,
+        profileId: ctx.token.profileId,
+        profileSlug: ctx.token.profileSlug ?? "default",
+        scopes: ctx.token.scopes,
+      });
+    },
   },
   // ---- batch ---------------------------------------------------------------------
   {
@@ -485,9 +538,15 @@ export function makeMcpHandler(deps: { db: Db; engine: LifecycleEngine; sup: Sup
     if (!tokenRow || tokenRow.revoked) {
       return sendJson(401, { jsonrpc: "2.0", error: { code: -32001, message: "unauthorized: valid MCP token required" }, id: null });
     }
+    let profileSlug: string | null = null;
+    if (tokenRow.profileId) {
+      const p = deps.db.profile(tokenRow.profileId);
+      if (p) profileSlug = p.slug;
+    }
     const token: TokenInfo = {
       id: tokenRow.id, name: tokenRow.name,
       scopes: tokenRow.scopes, computerId: tokenRow.computerId,
+      profileId: tokenRow.profileId, profileSlug,
     };
     deps.db.touchToken(token.id);
     if (!rateOk(token.id)) {
