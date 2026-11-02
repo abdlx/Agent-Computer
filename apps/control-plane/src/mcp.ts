@@ -50,13 +50,16 @@ function hasScope(token: TokenInfo, scope: string): boolean {
 }
 
 function effectiveProfile(ctx: CallCtx, argProfile?: unknown): string {
-  if (argProfile && typeof argProfile === "string" && argProfile.trim()) {
-    return argProfile.trim();
-  }
+  const arg = argProfile && typeof argProfile === "string" && argProfile.trim()
+    ? argProfile.trim()
+    : null;
   if (ctx.token.profileSlug) {
+    if (arg && arg !== ctx.token.profileSlug) {
+      throw new Error(`token is bound to profile ${ctx.token.profileSlug}; it cannot act as ${arg}`);
+    }
     return ctx.token.profileSlug;
   }
-  return "default";
+  return arg ?? "default";
 }
 
 function resolveComputer(ctx: CallCtx, arg: unknown): ComputerRow {
@@ -117,7 +120,7 @@ interface ToolDef {
 
 const COMPUTER_ARG = {
   computer: { type: "string", description: "Computer id or name. Optional when the token is bound to one computer or only one exists." },
-  profile: { type: "string", description: "Agent profile name (e.g. 'dex', 'kai', 'milo'). Optional, defaults to the profile bound to your token or 'default'." },
+  profile: { type: "string", description: "Agent profile name (e.g. 'dex', 'kai', 'milo'). Optional, defaults to the profile bound to your token or 'default'. When your token is bound to a profile, this must match it or the call is rejected." },
 };
 const obj = (props: Record<string, unknown>, required: string[] = []): Record<string, unknown> => ({
   type: "object", properties: props, required, additionalProperties: false,
@@ -192,8 +195,8 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: "computer_create", scope: "admin",
-    description: "Create a new computer (admin scope). Returns its id once ready.",
-    inputSchema: obj({ name: { type: "string" }, cpuMillis: { type: "number" }, memoryMb: { type: "number" } }, ["name"]),
+    description: "Create a new computer (admin scope). Returns its id once ready. Pass isShared: true to create a shared computer with a default agent profile, as the dashboard does.",
+    inputSchema: obj({ name: { type: "string" }, cpuMillis: { type: "number" }, memoryMb: { type: "number" }, isShared: { type: "boolean" } }, ["name"]),
     run: async (ctx, args) => {
       if (ctx.token.computerId) throw new Error("computer-bound tokens cannot create computers");
       const name = String(args.name ?? "").trim();
@@ -202,14 +205,27 @@ export const TOOLS: ToolDef[] = [
       const id = `${slug}-${crypto.randomBytes(3).toString("hex")}`;
       const cpuMillis = Number(args.cpuMillis ?? 1000);
       const memoryMb = Number(args.memoryMb ?? 2048);
+      const isShared = args.isShared === true;
       const created = await ctx.sup.create({ computerId: id, displayName: name, cpuMillis, memoryMb });
       ctx.db.insertComputer({
         id, name, container: created.container, volume: created.volume,
         socketPath: created.socketPath, guestToken: created.guestToken,
         state: "starting", cpuMillis, memoryMb, diskGb: 20,
-        limitsEnforced: created.limitsEnforced,
+        limitsEnforced: created.limitsEnforced, isShared,
         createdAt: Date.now(), updatedAt: Date.now(),
       });
+      if (isShared) {
+        ctx.db.insertProfile({
+          id: `prof_${crypto.randomBytes(4).toString("hex")}`,
+          computerId: id,
+          name: "Default Profile",
+          slug: "default",
+          description: "Default primary profile",
+          color: "#3b82f6",
+          isDefault: true,
+          createdAt: Date.now(), updatedAt: Date.now(),
+        });
+      }
       ctx.engine.register({
         id, container: created.container, socketPath: created.socketPath,
         guestToken: created.guestToken, state: "starting",
@@ -217,8 +233,8 @@ export const TOOLS: ToolDef[] = [
       await ctx.sup.start(id);
       await ctx.engine.wake(id);
       ctx.db.setComputerState(id, "ready");
-      ctx.db.audit(`mcp:${ctx.token.name}`, "computer.create", id, { name });
-      return text({ id, name, state: "ready", limitsEnforced: created.limitsEnforced });
+      ctx.db.audit(`mcp:${ctx.token.name}`, "computer.create", id, { name, isShared });
+      return text({ id, name, state: "ready", limitsEnforced: created.limitsEnforced, isShared });
     },
   },
   {
@@ -541,7 +557,12 @@ export function makeMcpHandler(deps: { db: Db; engine: LifecycleEngine; sup: Sup
     let profileSlug: string | null = null;
     if (tokenRow.profileId) {
       const p = deps.db.profile(tokenRow.profileId);
-      if (p) profileSlug = p.slug;
+      if (!p) {
+        // Token bound to a deleted profile: fail closed, never fall back
+        // to the default profile.
+        return sendJson(401, { jsonrpc: "2.0", error: { code: -32001, message: "unauthorized: valid MCP token required" }, id: null });
+      }
+      profileSlug = p.slug;
     }
     const token: TokenInfo = {
       id: tokenRow.id, name: tokenRow.name,

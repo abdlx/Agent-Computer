@@ -503,6 +503,27 @@ route("GET", "/api/settings", true, async () => {
 
 route("POST", "/api/settings", true, async (ctx) => {
   const settings = ctx.body as Record<string, unknown>;
+  // Only the keys the dashboard sends are accepted, with the same bounds
+  // the dashboard form enforces. Stored settings are read back by GET
+  // /api/settings only; the running idle timeout still comes from the
+  // ACP_IDLE_TIMEOUT_S environment variable.
+  for (const k of Object.keys(settings)) {
+    if (k !== "idleTimeoutS" && k !== "defaultEngine") {
+      return { status: 400, json: { error: `unknown setting: ${k}` } };
+    }
+  }
+  if (settings.idleTimeoutS !== undefined) {
+    const n = Number(settings.idleTimeoutS);
+    if (!Number.isInteger(n) || n < 30 || n > 3600) {
+      return { status: 400, json: { error: "idleTimeoutS must be an integer between 30 and 3600" } };
+    }
+  }
+  if (settings.defaultEngine !== undefined) {
+    const e = String(settings.defaultEngine);
+    if (e !== "camoufox" && e !== "chromium") {
+      return { status: 400, json: { error: "defaultEngine must be 'camoufox' or 'chromium'" } };
+    }
+  }
   for (const [k, v] of Object.entries(settings)) {
     db.setSetting(k, String(v));
   }
@@ -584,6 +605,15 @@ route("PATCH", "/api/computers/:id/profiles/:profileId", true, async (ctx) => {
   if (!prof || prof.computerId !== row.id) return { status: 404, json: { error: "profile not found" } };
   const updates: Record<string, any> = {};
   if (ctx.body.name !== undefined) updates.name = String(ctx.body.name).trim();
+  if (ctx.body.slug !== undefined) {
+    const slug = String(ctx.body.slug).trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+    if (!slug) return { status: 400, json: { error: "slug must not be empty" } };
+    const clash = db.profileBySlug(row.id, slug);
+    if (clash && clash.id !== prof.id) {
+      return { status: 409, json: { error: `profile slug "${slug}" already exists on this computer` } };
+    }
+    updates.slug = slug;
+  }
   if (ctx.body.description !== undefined) updates.description = String(ctx.body.description).trim();
   if (ctx.body.color !== undefined) updates.color = String(ctx.body.color).trim();
   if (ctx.body.isDefault !== undefined) updates.isDefault = Boolean(ctx.body.isDefault);
@@ -602,13 +632,18 @@ route("DELETE", "/api/computers/:id/profiles/:profileId", true, async (ctx) => {
     return { status: 400, json: { error: "cannot delete the only profile on a shared computer" } };
   }
   db.deleteProfile(prof.id);
+  // Tokens bound to the deleted profile must not silently fall back to
+  // the default profile: revoke them (the MCP handler also fails closed
+  // on any token whose profile row is gone).
+  const boundTokens = db.tokens().filter((t) => t.profile_id === prof.id);
+  if (boundTokens.length > 0) db.revokeTokensByProfile(prof.id);
   if (prof.isDefault) {
     const remaining = db.computerProfiles(row.id);
     if (remaining.length > 0) {
       db.updateProfile(remaining[0].id, { isDefault: true });
     }
   }
-  db.audit(ctx.user!.username, "profile.delete", row.id, { profileId: prof.id, name: prof.name });
+  db.audit(ctx.user!.username, "profile.delete", row.id, { profileId: prof.id, name: prof.name, revokedTokens: boundTokens.length });
   return { json: { ok: true } };
 });
 route("DELETE", "/api/tokens/:id", true, async (ctx) => {

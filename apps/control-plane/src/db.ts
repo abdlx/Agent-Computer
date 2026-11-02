@@ -319,6 +319,9 @@ export class Db {
   revokeToken(id: string): void {
     this.db.prepare("UPDATE mcp_tokens SET revoked = 1 WHERE id = ?").run(id);
   }
+  revokeTokensByProfile(profileId: string): void {
+    this.db.prepare("UPDATE mcp_tokens SET revoked = 1 WHERE profile_id = ?").run(profileId);
+  }
   touchToken(id: string): void {
     this.db.prepare("UPDATE mcp_tokens SET last_used_at = ? WHERE id = ?").run(Date.now(), id);
   }
