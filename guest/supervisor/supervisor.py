@@ -26,8 +26,10 @@ import base64
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
+import urllib.parse
 import urllib.request
 import threading
 import time
@@ -43,7 +45,7 @@ import trajectory
 from confined_fs import ConfinedFS
 from human_input import HumanInputObserver
 
-_browser = None  # BrowserOwner instance, created lazily on first /browser/start
+_browsers = {}  # profile_name -> BrowserOwner
 
 
 HOME_DIR = os.environ.get("HOME", "/home/agent")
@@ -65,12 +67,19 @@ def guest_exec_fs(p, b):
     computer's own user in a login shell (it IS the terminal)."""
     if p == "/exec":
         timeout = min(120, max(1, int(b.get("timeout_s", 30))))
+        profile = str(b.get("profile") or "default").strip()
+        workdir = HOME_DIR
+        if profile and profile != "default":
+            clean_p = re.sub(r"[^a-zA-Z0-9_-]", "", profile) or "default"
+            workdir = os.path.join(HOME_DIR, "profiles", clean_p)
+            os.makedirs(workdir, exist_ok=True)
         try:
             r = subprocess.run(
                 ["/bin/bash", "-lc", str(b["command"])],
                 capture_output=True, text=True, timeout=timeout,
-                cwd=HOME_DIR,
-                env={**os.environ, "HOME": HOME_DIR, "DISPLAY": DISPLAY_NAME})
+                cwd=workdir,
+                env={**os.environ, "HOME": HOME_DIR, "DISPLAY": DISPLAY_NAME,
+                     "AGENT_PROFILE": profile, "AGENT_WORKSPACE": workdir})
             cap = 20000
             return {"code": r.returncode,
                     "stdout": r.stdout[-cap:], "stderr": r.stderr[-cap:],
@@ -84,12 +93,13 @@ def guest_exec_fs(p, b):
     raise ValueError(f"unknown exec/fs path: {p}")
 
 
-def get_browser():
-    global _browser
-    if _browser is None:
+def get_browser(profile="default"):
+    global _browsers
+    p = str(profile or "default").strip()
+    if p not in _browsers:
         from browser_owner import BrowserOwner
-        _browser = BrowserOwner()
-    return _browser
+        _browsers[p] = BrowserOwner(profile_name=p)
+    return _browsers[p]
 
 DISPLAY_NAME = os.environ.get("DISPLAY", ":0")
 PORT = int(os.environ.get("GUEST_SUPERVISOR_PORT", "8731"))
@@ -136,8 +146,11 @@ def human_takeover():
         activity["last_any"] = now()
         control.update(owner="human", since=now(), reason="viewer-input")
     release_all()
-    if _browser is not None:
-        _browser.cancel_input()
+    for br in list(_browsers.values()):
+        try:
+            br.cancel_input()
+        except Exception:
+            pass
 
 
 def guard_continuing_input():
@@ -475,6 +488,18 @@ class Handler(BaseHTTPRequestHandler):
                 activity["last_agent"] = now()
             return True
 
+    def _req_profile(self, body=None):
+        if body and isinstance(body, dict) and body.get("profile"):
+            return str(body["profile"]).strip()
+        hdr = self.headers.get("X-Agent-Profile")
+        if hdr:
+            return str(hdr).strip()
+        if "?" in self.path:
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            if "profile" in qs and qs["profile"]:
+                return qs["profile"][0].strip()
+        return "default"
+
     def do_GET(self):
         if not self._authorized():
             return self._send(401, {"error": "unauthorized"})
@@ -501,16 +526,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, desktop_selftest())
             elif self.path == "/vnc":
                 return self._vnc_bridge()
-            elif self.path == "/browser/state":
-                b = get_browser()
+            elif self.path.startswith("/browser/state"):
+                prof = self._req_profile()
+                b = get_browser(prof)
                 if b._thread and b._thread.is_alive():
                     self._send(200, b.state())
                 else:
-                    self._send(200, {"engine": None, "running": False})
-            elif self.path == "/browser/content":
-                self._send(200, get_browser().content())
-            elif self.path == "/browser/snapshot":
-                self._send(200, get_browser().snapshot())
+                    self._send(200, {"engine": None, "profile_name": prof, "running": False})
+            elif self.path.startswith("/browser/content"):
+                prof = self._req_profile()
+                self._send(200, get_browser(prof).content())
+            elif self.path.startswith("/browser/snapshot"):
+                prof = self._req_profile()
+                self._send(200, get_browser(prof).snapshot())
             else:
                 self._send(404, {"error": "not found"})
         except InterruptedError:
@@ -639,9 +667,18 @@ class Handler(BaseHTTPRequestHandler):
                 release_all()
                 return self._send(200, {"released": True})
             if p == "/browser/close":
-                b = get_browser()
-                b.close()
-                return self._send(200, {"closed": True})
+                prof = self._req_profile(b)
+                if prof == "all":
+                    for br in list(_browsers.values()):
+                        try:
+                            br.close()
+                        except Exception:
+                            pass
+                    _browsers.clear()
+                    return self._send(200, {"closed": "all"})
+                br = get_browser(prof)
+                br.close()
+                return self._send(200, {"closed": prof})
             if p == "/control/acquire":
                 with state_lock:
                     control.update(owner=actor, since=now(), reason="explicit-acquire")
@@ -668,15 +705,20 @@ class Handler(BaseHTTPRequestHandler):
                 eng = b.get("engine") or browser_engine()
                 if eng == "none":
                     return self._send(503, {"error": "no browser engine installed"})
-                return self._send(200, get_browser().start(eng))
+                prof = self._req_profile(b)
+                return self._send(200, get_browser(prof).start(eng))
             if p == "/browser/navigate":
-                return self._send(200, get_browser().goto(b["url"]))
+                prof = self._req_profile(b)
+                return self._send(200, get_browser(prof).goto(b["url"]))
             if p == "/browser/click":
-                return self._send(200, get_browser().click_ref(b["ref"]))
+                prof = self._req_profile(b)
+                return self._send(200, get_browser(prof).click_ref(b["ref"]))
             if p == "/browser/fill":
-                return self._send(200, get_browser().fill_ref(b["ref"], b["text"]))
+                prof = self._req_profile(b)
+                return self._send(200, get_browser(prof).fill_ref(b["ref"], b["text"]))
             if p == "/browser/press":
-                return self._send(200, get_browser().press(b["key"]))
+                prof = self._req_profile(b)
+                return self._send(200, get_browser(prof).press(b["key"]))
             if p == "/input/move":
                 move_to(b["x"], b["y"], b.get("mode", "natural"), b.get("duration_ms"))
                 x, y = pointer_pos()
@@ -811,15 +853,25 @@ def main():
 
     def _shutdown(*_a):
         try:
-            if _browser is not None:
-                _browser.close()   # flush profile state before exit
+            for br in list(_browsers.values()):
+                try:
+                    br.close()   # flush profile state before exit
+                except Exception:
+                    pass
         finally:
             release_all()
         raise SystemExit(0)
 
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
-    atexit.register(lambda: _browser.close() if _browser is not None else None)
+
+    def _cleanup_all():
+        for br in list(_browsers.values()):
+            try:
+                br.close()
+            except Exception:
+                pass
+    atexit.register(_cleanup_all)
     threading.Thread(target=human_watch, daemon=True).start()
     threading.Thread(target=human_expire, daemon=True).start()
     threading.Thread(target=hold_watchdog, daemon=True).start()

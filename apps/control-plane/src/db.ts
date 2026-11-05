@@ -26,6 +26,19 @@ export interface ComputerRow {
   memoryMb: number;
   diskGb: number;
   limitsEnforced: boolean | null;
+  isShared: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ProfileRow {
+  id: string;
+  computerId: string;
+  name: string;
+  slug: string;
+  description: string;
+  color: string;
+  isDefault: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -88,6 +101,21 @@ const MIGRATIONS: string[] = [
   `CREATE TRIGGER one_owner BEFORE INSERT ON users
    WHEN (SELECT COUNT(*) FROM users) >= 1
    BEGIN SELECT RAISE(ABORT, 'setup already completed'); END;`,
+  // v4: shared computers, computer profiles, and profile-scoped MCP tokens
+  `ALTER TABLE computers ADD COLUMN is_shared INTEGER NOT NULL DEFAULT 0;
+   CREATE TABLE computer_profiles (
+     id TEXT PRIMARY KEY,
+     computer_id TEXT NOT NULL REFERENCES computers(id) ON DELETE CASCADE,
+     name TEXT NOT NULL,
+     slug TEXT NOT NULL,
+     description TEXT NOT NULL DEFAULT '',
+     color TEXT NOT NULL DEFAULT '#3b82f6',
+     is_default INTEGER NOT NULL DEFAULT 0,
+     created_at INTEGER NOT NULL,
+     updated_at INTEGER NOT NULL,
+     UNIQUE(computer_id, slug)
+   );
+   ALTER TABLE mcp_tokens ADD COLUMN profile_id TEXT;`,
 ];
 
 export class Db {
@@ -160,6 +188,7 @@ export class Db {
       cpuMillis: Number(r.cpu_millis), memoryMb: Number(r.memory_mb),
       diskGb: Number(r.disk_gb),
       limitsEnforced: r.limits_enforced == null ? null : Number(r.limits_enforced) === 1,
+      isShared: Boolean(Number(r.is_shared ?? 0) === 1),
       createdAt: Number(r.created_at),
       updatedAt: Number(r.updated_at),
     };
@@ -167,12 +196,13 @@ export class Db {
   insertComputer(c: ComputerRow): void {
     this.db.prepare(
       `INSERT INTO computers (id, name, container, volume, socket_path, guest_token,
-        state, cpu_millis, memory_mb, disk_gb, limits_enforced, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(c.id, c.name, c.container, c.volume, c.socketPath, c.guestToken, c.state,
-           c.cpuMillis, c.memoryMb, c.diskGb,
-           c.limitsEnforced == null ? null : c.limitsEnforced ? 1 : 0,
-           c.createdAt, c.updatedAt);
+        state, cpu_millis, memory_mb, disk_gb, limits_enforced, is_shared, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(c.id, c.name, c.container, c.volume, c.socketPath, c.guestToken, c.state,
+         c.cpuMillis, c.memoryMb, c.diskGb,
+         c.limitsEnforced == null ? null : c.limitsEnforced ? 1 : 0,
+         c.isShared ? 1 : 0,
+         c.createdAt, c.updatedAt);
   }
   computer(id: string): ComputerRow | null {
     const r = this.db.prepare("SELECT * FROM computers WHERE id = ?").get(id) as
@@ -187,31 +217,99 @@ export class Db {
     this.db.prepare("UPDATE computers SET state = ?, updated_at = ? WHERE id = ?")
       .run(state, Date.now(), id);
   }
+  setComputerShared(id: string, isShared: boolean): void {
+    this.db.prepare("UPDATE computers SET is_shared = ?, updated_at = ? WHERE id = ?")
+      .run(isShared ? 1 : 0, Date.now(), id);
+  }
   deleteComputer(id: string): void {
     this.db.prepare("DELETE FROM computers WHERE id = ?").run(id);
   }
 
-  // ---- mcp tokens (used by Phase 2) -------------------------------------------
-  insertToken(t: { id: string; name: string; tokenHash: string; scopes: string[]; computerId: string | null }): void {
-    this.db.prepare(
-      "INSERT INTO mcp_tokens (id, name, token_hash, scopes, computer_id, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(t.id, t.name, t.tokenHash, JSON.stringify(t.scopes), t.computerId, Date.now());
+  // ---- computer profiles -------------------------------------------------------
+  private rowToProfile(r: Record<string, unknown>): ProfileRow {
+    return {
+      id: String(r.id),
+      computerId: String(r.computer_id),
+      name: String(r.name),
+      slug: String(r.slug),
+      description: String(r.description ?? ""),
+      color: String(r.color ?? "#3b82f6"),
+      isDefault: Boolean(Number(r.is_default ?? 0) === 1),
+      createdAt: Number(r.created_at),
+      updatedAt: Number(r.updated_at),
+    };
   }
-  tokenByHash(hash: string): { id: string; name: string; scopes: string[]; computerId: string | null; revoked: boolean } | null {
+  insertProfile(p: ProfileRow): void {
+    this.db.prepare(
+      `INSERT INTO computer_profiles (id, computer_id, name, slug, description, color, is_default, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(p.id, p.computerId, p.name, p.slug, p.description, p.color, p.isDefault ? 1 : 0, p.createdAt, p.updatedAt);
+  }
+  computerProfiles(computerId: string): ProfileRow[] {
+    return (this.db.prepare(
+      "SELECT * FROM computer_profiles WHERE computer_id = ? ORDER BY is_default DESC, created_at ASC"
+    ).all(computerId) as Record<string, unknown>[]).map((r) => this.rowToProfile(r));
+  }
+  profile(id: string): ProfileRow | null {
+    const r = this.db.prepare("SELECT * FROM computer_profiles WHERE id = ?").get(id) as
+      Record<string, unknown> | undefined;
+    return r ? this.rowToProfile(r) : null;
+  }
+  profileBySlug(computerId: string, slug: string): ProfileRow | null {
+    const r = this.db.prepare("SELECT * FROM computer_profiles WHERE computer_id = ? AND slug = ?").get(computerId, slug) as
+      Record<string, unknown> | undefined;
+    return r ? this.rowToProfile(r) : null;
+  }
+  defaultProfile(computerId: string): ProfileRow | null {
+    const r = this.db.prepare("SELECT * FROM computer_profiles WHERE computer_id = ? AND is_default = 1 LIMIT 1").get(computerId) as
+      Record<string, unknown> | undefined;
+    if (r) return this.rowToProfile(r);
+    const first = this.db.prepare("SELECT * FROM computer_profiles WHERE computer_id = ? ORDER BY created_at ASC LIMIT 1").get(computerId) as
+      Record<string, unknown> | undefined;
+    return first ? this.rowToProfile(first) : null;
+  }
+  updateProfile(id: string, updates: { name?: string; slug?: string; description?: string; color?: string; isDefault?: boolean }): void {
+    const cur = this.profile(id);
+    if (!cur) throw new Error("profile not found");
+    const name = updates.name ?? cur.name;
+    const slug = updates.slug ?? cur.slug;
+    const desc = updates.description ?? cur.description;
+    const color = updates.color ?? cur.color;
+    const isDef = updates.isDefault !== undefined ? (updates.isDefault ? 1 : 0) : (cur.isDefault ? 1 : 0);
+    if (updates.isDefault) {
+      this.db.prepare("UPDATE computer_profiles SET is_default = 0 WHERE computer_id = ?").run(cur.computerId);
+    }
+    this.db.prepare(
+      "UPDATE computer_profiles SET name = ?, slug = ?, description = ?, color = ?, is_default = ?, updated_at = ? WHERE id = ?"
+    ).run(name, slug, desc, color, isDef, Date.now(), id);
+  }
+  deleteProfile(id: string): void {
+    this.db.prepare("DELETE FROM computer_profiles WHERE id = ?").run(id);
+  }
+
+  // ---- mcp tokens (used by Phase 2) -------------------------------------------
+  insertToken(t: { id: string; name: string; tokenHash: string; scopes: string[]; computerId: string | null; profileId?: string | null }): void {
+    this.db.prepare(
+      "INSERT INTO mcp_tokens (id, name, token_hash, scopes, computer_id, profile_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(t.id, t.name, t.tokenHash, JSON.stringify(t.scopes), t.computerId, t.profileId ?? null, Date.now());
+  }
+  tokenByHash(hash: string): { id: string; name: string; scopes: string[]; computerId: string | null; profileId: string | null; revoked: boolean } | null {
     const r = this.db.prepare("SELECT * FROM mcp_tokens WHERE token_hash = ?").get(hash) as
       Record<string, unknown> | undefined;
     if (!r) return null;
     return {
       id: String(r.id), name: String(r.name), scopes: JSON.parse(String(r.scopes)),
       computerId: r.computer_id ? String(r.computer_id) : null,
+      profileId: r.profile_id ? String(r.profile_id) : null,
       revoked: Number(r.revoked) === 1,
     };
   }
   tokens(): Record<string, unknown>[] {
     return (this.db.prepare(
-      "SELECT id, name, scopes, computer_id, created_at, last_used_at, revoked FROM mcp_tokens ORDER BY created_at")
+      "SELECT id, name, scopes, computer_id, profile_id, created_at, last_used_at, revoked FROM mcp_tokens ORDER BY created_at")
       .all() as Record<string, unknown>[]).map((r) => ({
         ...r, scopes: JSON.parse(String(r.scopes)),
+        profile_id: r.profile_id ? String(r.profile_id) : null,
       }));
   }
   tokenActive(id: string): boolean {
@@ -220,6 +318,9 @@ export class Db {
   }
   revokeToken(id: string): void {
     this.db.prepare("UPDATE mcp_tokens SET revoked = 1 WHERE id = ?").run(id);
+  }
+  revokeTokensByProfile(profileId: string): void {
+    this.db.prepare("UPDATE mcp_tokens SET revoked = 1 WHERE profile_id = ?").run(profileId);
   }
   touchToken(id: string): void {
     this.db.prepare("UPDATE mcp_tokens SET last_used_at = ? WHERE id = ?").run(Date.now(), id);
@@ -250,5 +351,21 @@ export class Db {
     this.db.prepare(
       "INSERT INTO engine_state (id, json) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET json = excluded.json")
       .run(json);
+  }
+
+  // ---- settings ------------------------------------------------------------------
+  getSetting(key: string, defaultVal = ""): string {
+    const r = this.db.prepare("SELECT v FROM settings WHERE k = ?").get(key) as { v: string } | undefined;
+    return r ? r.v : defaultVal;
+  }
+  setSetting(key: string, value: string): void {
+    this.db.prepare("INSERT INTO settings (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v")
+      .run(key, value);
+  }
+  allSettings(): Record<string, string> {
+    const rows = this.db.prepare("SELECT k, v FROM settings").all() as { k: string; v: string }[];
+    const res: Record<string, string> = {};
+    for (const r of rows) res[r.k] = r.v;
+    return res;
   }
 }
